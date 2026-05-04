@@ -1,3 +1,5 @@
+import { unstable_cache } from "next/cache";
+
 const BASE = process.env.INTELLICAR_BASE_URL ?? "https://apiplatform.intellicar.in/api/standard";
 const USER = process.env.INTELLICAR_USERNAME!;
 const PASS = process.env.INTELLICAR_PASSWORD!;
@@ -7,30 +9,16 @@ if (!USER || !PASS) {
   console.warn("[intellicar] credentials missing");
 }
 
+// Token cache stays in-memory: cheap, only one value per process, and refreshing
+// from any instance via Intellicar's gettoken endpoint is a 200ms operation.
 declare global {
   // eslint-disable-next-line no-var
   var __intellicarToken: { token: string; expiresAt: number } | undefined;
   // eslint-disable-next-line no-var
   var __intellicarTokenInflight: Promise<string> | undefined;
-  // eslint-disable-next-line no-var
-  var __gpsHistoryCache: Map<string, { fetchedAt: number; points: GpsHistoryPoint[] }> | undefined;
-  // eslint-disable-next-line no-var
-  var __liveGpsCache: Map<string, { fetchedAt: number; data: LastGps | null }> | undefined;
-  // eslint-disable-next-line no-var
-  var __vehicleSet: { fetchedAt: number; set: Set<string> } | undefined;
-  // eslint-disable-next-line no-var
-  var __distanceCache: Map<string, { fetchedAt: number; data: DistanceResult | null }> | undefined;
 }
 
-const HISTORY_TTL_MS = 60_000;
-const LIVE_TTL_MS = 25_000;
-const DISTANCE_TTL_MS = 60_000;          // re-fetch distances at most once per minute
-const STALE_FALLBACK_MS = 10 * 60_000;   // keep showing stale value for 10 min if fresh fetch fails
 const TOKEN_REFRESH_BEFORE_MS = 12 * 60 * 60 * 1000;
-
-if (!global.__gpsHistoryCache) global.__gpsHistoryCache = new Map();
-if (!global.__liveGpsCache) global.__liveGpsCache = new Map();
-if (!global.__distanceCache) global.__distanceCache = new Map();
 
 async function fetchToken(): Promise<string> {
   const r = await fetch(`${BASE}/gettoken`, {
@@ -141,63 +129,76 @@ export interface VehicleInfo {
   assignedgroups?: { groupname: string }[];
 }
 
-export async function getLastGps(vehicleno: string): Promise<LastGps | null> {
-  const cache = global.__liveGpsCache!;
-  const c = cache.get(vehicleno);
-  const now = Date.now();
-  if (c && now - c.fetchedAt < LIVE_TTL_MS) return c.data;
-  try {
-    const data = await call<LastGps>("getlastgpsstatus", { vehicleno });
-    cache.set(vehicleno, { fetchedAt: now, data });
-    return data;
-  } catch {
-    // Stale-on-error: keep showing previous value if reasonably recent
-    if (c && now - c.fetchedAt < STALE_FALLBACK_MS && c.data) return c.data;
-    cache.set(vehicleno, { fetchedAt: now, data: null });
-    return null;
-  }
-}
+// ---------- Vercel Data Cache wrappers ----------
+// `unstable_cache` is backed by Vercel's Data Cache in production:
+// shared across every serverless instance and across requests.
+// Keys are the args + the static `keyParts`. TTL is `revalidate` (seconds).
 
-export async function getDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult | null> {
-  const cache = global.__distanceCache!;
-  const key = `${vehicleno}|${starttime}|${endtime}`;
-  const c = cache.get(key);
-  const now = Date.now();
-  if (c && now - c.fetchedAt < DISTANCE_TTL_MS) return c.data;
+async function _fetchLastGps(vehicleno: string): Promise<LastGps | null> {
+  try { return await call<LastGps>("getlastgpsstatus", { vehicleno }); }
+  catch { return null; }
+}
+const cachedLastGps = unstable_cache(
+  _fetchLastGps,
+  ["intellicar:lastGps:v1"],
+  { revalidate: 25, tags: ["intellicar", "live"] }
+);
+
+async function _fetchDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult | null> {
   try {
-    const data = await call<DistanceResult>("getdistancetravelled", {
+    return await call<DistanceResult>("getdistancetravelled", {
       vehicleno,
       starttime: String(starttime),
       endtime: String(endtime),
     });
-    cache.set(key, { fetchedAt: now, data });
-    return data;
-  } catch {
-    // Stale-on-error: keep showing previous value if reasonably recent
-    if (c && now - c.fetchedAt < STALE_FALLBACK_MS && c.data) return c.data;
-    cache.set(key, { fetchedAt: now, data: null });
-    return null;
-  }
+  } catch { return null; }
 }
+const cachedDistance = unstable_cache(
+  _fetchDistance,
+  ["intellicar:distance:v1"],
+  { revalidate: 60, tags: ["intellicar", "distance"] }
+);
 
-export async function getGpsHistory(vehicleno: string, starttime: number, endtime: number): Promise<GpsHistoryPoint[]> {
-  const cacheKey = `${vehicleno}|${starttime}|${endtime}`;
-  const cache = global.__gpsHistoryCache!;
-  const c = cache.get(cacheKey);
-  const now = Date.now();
-  if (c && now - c.fetchedAt < HISTORY_TTL_MS) return c.points;
+async function _fetchGpsHistory(vehicleno: string, starttime: number, endtime: number): Promise<GpsHistoryPoint[]> {
   try {
     const points = await call<GpsHistoryPoint[]>("getgpshistory", {
       vehicleno,
       starttime: String(starttime),
       endtime: String(endtime),
     });
-    cache.set(cacheKey, { fetchedAt: now, points: points || [] });
     return points || [];
-  } catch {
-    cache.set(cacheKey, { fetchedAt: now, points: [] });
-    return [];
-  }
+  } catch { return []; }
+}
+const cachedGpsHistory = unstable_cache(
+  _fetchGpsHistory,
+  ["intellicar:gpsHistory:v1"],
+  { revalidate: 60, tags: ["intellicar", "history"] }
+);
+
+async function _fetchVehicleSet(): Promise<string[]> {
+  try {
+    const list = await call<{ vehicleno: string }[]>("listvehicles", {});
+    return (list || []).map((v) => v.vehicleno);
+  } catch { return []; }
+}
+const cachedVehicleSet = unstable_cache(
+  _fetchVehicleSet,
+  ["intellicar:vehicleSet:v1"],
+  { revalidate: 300, tags: ["intellicar", "admin"] }
+);
+
+// ---------- Public API ----------
+
+export async function getLastGps(vehicleno: string): Promise<LastGps | null> {
+  return cachedLastGps(vehicleno);
+}
+
+export async function getDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult | null> {
+  return cachedDistance(vehicleno, starttime, endtime);
+}
+
+export async function getGpsHistory(vehicleno: string, starttime: number, endtime: number): Promise<GpsHistoryPoint[]> {
+  return cachedGpsHistory(vehicleno, starttime, endtime);
 }
 
 export async function getVehicleInfo(vehicleno: string): Promise<VehicleInfo | null> {
@@ -208,20 +209,9 @@ export async function getVehicleInfo(vehicleno: string): Promise<VehicleInfo | n
   }
 }
 
-const VEHICLE_SET_TTL_MS = 5 * 60 * 1000;
-
 export async function getProvisionedVehicleSet(): Promise<Set<string>> {
-  const now = Date.now();
-  const cached = global.__vehicleSet;
-  if (cached && now - cached.fetchedAt < VEHICLE_SET_TTL_MS) return cached.set;
-  try {
-    const list = await call<{ vehicleno: string }[]>("listvehicles", {});
-    const set = new Set<string>((list || []).map((v) => v.vehicleno));
-    global.__vehicleSet = { fetchedAt: now, set };
-    return set;
-  } catch {
-    return cached?.set ?? new Set();
-  }
+  const arr = await cachedVehicleSet();
+  return new Set(arr);
 }
 
 // ---------- Helpers ----------
