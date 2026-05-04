@@ -5,14 +5,18 @@ export interface SessionData {
   user?: string;
 }
 
-const password = process.env.SESSION_SECRET;
-if (!password || password.length < 32) {
-  console.warn("[auth] SESSION_SECRET should be at least 32 characters");
+const FALLBACK = "dev-fallback-secret-DO-NOT-use-in-prod-rotate-now-please-32+chars";
+const raw = process.env.SESSION_SECRET;
+const password = raw && raw.length >= 32 ? raw : FALLBACK;
+if (!raw) {
+  console.warn("[auth] SESSION_SECRET not set — using insecure dev fallback. Set a 32+ char secret in env.");
+} else if (raw.length < 32) {
+  console.warn(`[auth] SESSION_SECRET is too short (${raw.length} chars, need 32+). Using insecure dev fallback. Fix the env var.`);
 }
 
 const sessionOptions: SessionOptions = {
   cookieName: "blinkit-fleet-session",
-  password: password || "fallback-dev-secret-please-rotate-32chars!!",
+  password,
   cookieOptions: {
     secure: process.env.NODE_ENV === "production",
     httpOnly: true,
