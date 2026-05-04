@@ -2,6 +2,41 @@ import { listBlinkitRiders, getRider, type RiderDoc } from "./mongo";
 import { getLastGps, getDistance, classifyStatus, getProvisionedVehicleSet, type LastGps, type LiveStatus } from "./intellicar";
 import { canonicalZone } from "@/config/zones";
 
+declare global {
+  // eslint-disable-next-line no-var
+  var __distanceFloor: Map<string, { value: number; updatedAt: number }> | undefined;
+}
+if (!global.__distanceFloor) global.__distanceFloor = new Map();
+const FLOOR_HOLD_MS = 60 * 60_000; // hold the high-water mark for 1 hour
+
+function monotonic(key: string, fresh: number | null): number | null {
+  const cache = global.__distanceFloor!;
+  const now = Date.now();
+  const floor = cache.get(key);
+  // Drop a stale floor (older than the hold window)
+  if (floor && now - floor.updatedAt > FLOOR_HOLD_MS) {
+    cache.delete(key);
+  }
+  const current = cache.get(key);
+  if (fresh == null) {
+    return current ? current.value : null; // fall back to floor while fresh fails
+  }
+  if (current && current.value > fresh) {
+    // Don't let displayed value drop within the hold window
+    return current.value;
+  }
+  cache.set(key, { value: fresh, updatedAt: now });
+  return fresh;
+}
+
+function todayKey(vehicleno: string): string {
+  const d = new Date();
+  return `today|${vehicleno}|${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+function sevenDayKey(vehicleno: string, hourBucket: number): string {
+  return `7d|${vehicleno}|${hourBucket}`;
+}
+
 export interface RiderRow {
   id: string;
   name: string;
@@ -100,7 +135,10 @@ export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promis
         includeDistance ? getDistance(v, todayStart, endBucket) : Promise.resolve(null),
         includeDistance ? getDistance(v, sevenDaysAgo, endBucket) : Promise.resolve(null),
       ]);
-      return shape(r, gps, dToday?.distance ?? null, d7d?.distance ?? null, false);
+      const hourBucket = Math.floor(endBucket / (60 * 60_000));
+      const todayMono = monotonic(todayKey(v), dToday?.distance ?? null);
+      const sevenMono = monotonic(sevenDayKey(v, hourBucket), d7d?.distance ?? null);
+      return shape(r, gps, todayMono, sevenMono, false);
     })
   );
   return rows;
@@ -145,7 +183,10 @@ export async function getRiderRowById(id: string): Promise<RiderRow | null> {
     getDistance(v, todayStart, endBucket),
     getDistance(v, sevenDaysAgo, endBucket),
   ]);
-  return shape(r, gps, dToday?.distance ?? null, d7d?.distance ?? null, false);
+  const hourBucket = Math.floor(endBucket / (60 * 60_000));
+  const todayMono = monotonic(todayKey(v), dToday?.distance ?? null);
+  const sevenMono = monotonic(sevenDayKey(v, hourBucket), d7d?.distance ?? null);
+  return shape(r, gps, todayMono, sevenMono, false);
 }
 
 export async function getDailyDistanceSeries(vehicleno: string, days = 7): Promise<Array<{ day: string; km: number }>> {
