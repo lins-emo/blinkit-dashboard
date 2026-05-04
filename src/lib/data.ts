@@ -1,33 +1,6 @@
-import { listBlinkitRiders, getRider, type RiderDoc } from "./mongo";
+import { listBlinkitRiders, getRider, readFloors, writeFloors, type RiderDoc } from "./mongo";
 import { getLastGps, getDistance, classifyStatus, getProvisionedVehicleSet, type LastGps, type LiveStatus } from "./intellicar";
 import { canonicalZone } from "@/config/zones";
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __distanceFloor: Map<string, { value: number; updatedAt: number }> | undefined;
-}
-if (!global.__distanceFloor) global.__distanceFloor = new Map();
-const FLOOR_HOLD_MS = 60 * 60_000; // hold the high-water mark for 1 hour
-
-function monotonic(key: string, fresh: number | null): number | null {
-  const cache = global.__distanceFloor!;
-  const now = Date.now();
-  const floor = cache.get(key);
-  // Drop a stale floor (older than the hold window)
-  if (floor && now - floor.updatedAt > FLOOR_HOLD_MS) {
-    cache.delete(key);
-  }
-  const current = cache.get(key);
-  if (fresh == null) {
-    return current ? current.value : null; // fall back to floor while fresh fails
-  }
-  if (current && current.value > fresh) {
-    // Don't let displayed value drop within the hold window
-    return current.value;
-  }
-  cache.set(key, { value: fresh, updatedAt: now });
-  return fresh;
-}
 
 function todayKey(vehicleno: string): string {
   const d = new Date();
@@ -123,24 +96,66 @@ export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promis
   const endBucket = bucketMin(Date.now());
   const todayStart = startOfTodayMs();
   const sevenDaysAgo = endBucket - 7 * 24 * 60 * 60 * 1000;
+  const hourBucket = Math.floor(endBucket / (60 * 60_000));
 
-  const rows = await Promise.all(
+  // Pre-build floor keys so we can read all of them in one Mongo round-trip.
+  const trackable = riders.filter((r) => {
+    const v = r.vehicleAssigned?.vehicleId?.trim();
+    return v && !/^Testing/i.test(v) && provisioned.has(v);
+  });
+  const floorKeys: string[] = [];
+  for (const r of trackable) {
+    const v = r.vehicleAssigned!.vehicleId!.trim();
+    floorKeys.push(todayKey(v), sevenDayKey(v, hourBucket));
+  }
+  const floors = await readFloors(floorKeys);
+
+  // Fetch live + distance for each trackable rider in parallel.
+  const fetched = await Promise.all(
     riders.map(async (r) => {
       const v = r.vehicleAssigned?.vehicleId?.trim();
-      if (!v || /^Testing/i.test(v)) return shape(r, null, null, null, false);
-      const onIntellicar = provisioned.has(v);
-      if (!onIntellicar) return shape(r, null, null, null, true);
+      if (!v || /^Testing/i.test(v)) return { r, gps: null, dToday: null, d7d: null, notOnIntellicar: false };
+      if (!provisioned.has(v)) return { r, gps: null, dToday: null, d7d: null, notOnIntellicar: true };
       const [gps, dToday, d7d] = await Promise.all([
         getLastGps(v),
         includeDistance ? getDistance(v, todayStart, endBucket) : Promise.resolve(null),
         includeDistance ? getDistance(v, sevenDaysAgo, endBucket) : Promise.resolve(null),
       ]);
-      const hourBucket = Math.floor(endBucket / (60 * 60_000));
-      const todayMono = monotonic(todayKey(v), dToday?.distance ?? null);
-      const sevenMono = monotonic(sevenDayKey(v, hourBucket), d7d?.distance ?? null);
-      return shape(r, gps, todayMono, sevenMono, false);
+      return { r, gps, dToday: dToday?.distance ?? null, d7d: d7d?.distance ?? null, notOnIntellicar: false };
     })
   );
+
+  // Apply monotonic floor: never display a value below what we've previously
+  // observed for the same window. Collect updates for a single bulk write.
+  const updates: Array<{ key: string; value: number }> = [];
+  const rows = fetched.map(({ r, gps, dToday, d7d, notOnIntellicar }) => {
+    const v = r.vehicleAssigned?.vehicleId?.trim();
+    let todayDisplay = dToday;
+    let sevenDisplay = d7d;
+    if (v && !notOnIntellicar) {
+      const tKey = todayKey(v);
+      const sKey = sevenDayKey(v, hourBucket);
+      const tFloor = floors.get(tKey);
+      const sFloor = floors.get(sKey);
+      if (dToday != null) {
+        todayDisplay = tFloor != null && tFloor > dToday ? tFloor : dToday;
+        if (todayDisplay > (tFloor ?? -1)) updates.push({ key: tKey, value: todayDisplay });
+      } else if (tFloor != null) {
+        todayDisplay = tFloor;
+      }
+      if (d7d != null) {
+        sevenDisplay = sFloor != null && sFloor > d7d ? sFloor : d7d;
+        if (sevenDisplay > (sFloor ?? -1)) updates.push({ key: sKey, value: sevenDisplay });
+      } else if (sFloor != null) {
+        sevenDisplay = sFloor;
+      }
+    }
+    return shape(r, gps, todayDisplay, sevenDisplay, notOnIntellicar);
+  });
+
+  // Fire-and-forget the bulk floor update — don't block the response.
+  if (updates.length > 0) writeFloors(updates).catch(() => {});
+
   return rows;
 }
 
@@ -178,15 +193,26 @@ export async function getRiderRowById(id: string): Promise<RiderRow | null> {
   const endBucket = bucketMin(Date.now());
   const todayStart = startOfTodayMs();
   const sevenDaysAgo = endBucket - 7 * 24 * 60 * 60 * 1000;
-  const [gps, dToday, d7d] = await Promise.all([
+  const hourBucket = Math.floor(endBucket / (60 * 60_000));
+  const tKey = todayKey(v);
+  const sKey = sevenDayKey(v, hourBucket);
+  const [gps, dToday, d7d, floorMap] = await Promise.all([
     getLastGps(v),
     getDistance(v, todayStart, endBucket),
     getDistance(v, sevenDaysAgo, endBucket),
+    readFloors([tKey, sKey]),
   ]);
-  const hourBucket = Math.floor(endBucket / (60 * 60_000));
-  const todayMono = monotonic(todayKey(v), dToday?.distance ?? null);
-  const sevenMono = monotonic(sevenDayKey(v, hourBucket), d7d?.distance ?? null);
-  return shape(r, gps, todayMono, sevenMono, false);
+  const tFresh = dToday?.distance ?? null;
+  const sFresh = d7d?.distance ?? null;
+  const tFloor = floorMap.get(tKey);
+  const sFloor = floorMap.get(sKey);
+  const todayDisplay = tFresh != null ? Math.max(tFresh, tFloor ?? -1) : tFloor ?? null;
+  const sevenDisplay = sFresh != null ? Math.max(sFresh, sFloor ?? -1) : sFloor ?? null;
+  const updates: Array<{ key: string; value: number }> = [];
+  if (todayDisplay != null && todayDisplay > (tFloor ?? -1)) updates.push({ key: tKey, value: todayDisplay });
+  if (sevenDisplay != null && sevenDisplay > (sFloor ?? -1)) updates.push({ key: sKey, value: sevenDisplay });
+  if (updates.length > 0) writeFloors(updates).catch(() => {});
+  return shape(r, gps, todayDisplay, sevenDisplay, false);
 }
 
 export async function getDailyDistanceSeries(vehicleno: string, days = 7): Promise<Array<{ day: string; km: number }>> {

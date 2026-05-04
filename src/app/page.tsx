@@ -3,10 +3,12 @@ import Shell from "@/components/Shell";
 import KpiCard from "@/components/KpiCard";
 import Avatar from "@/components/Avatar";
 import { LiveStatusPill, NotProvisionedPill } from "@/components/StatusPill";
+import LastUpdated from "@/components/LastUpdated";
 import { getAllRiderRows } from "@/lib/data";
 
+// Auth-gated, must render per request. Speed comes from the Vercel Data Cache
+// layer inside lib/intellicar (unstable_cache) and the loading.tsx skeleton.
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 export default async function OverviewPage() {
   const rows = await getAllRiderRows();
@@ -36,6 +38,8 @@ export default async function OverviewPage() {
   const zones = [...byZone.entries()].sort((a, b) => b[1].count - a[1].count);
   const maxZoneDist = Math.max(1, ...zones.map(([, z]) => z.dist7d));
 
+  const renderedAt = Date.now();
+
   return (
     <Shell>
       <div className="flex items-end justify-between mb-6 gap-4 flex-wrap">
@@ -43,9 +47,13 @@ export default async function OverviewPage() {
           <h1 className="text-2xl font-semibold text-ink tracking-tight">Fleet overview</h1>
           <p className="text-sm text-ink-3 mt-0.5">Live status across all Blinkit riders.</p>
         </div>
-        <div className="text-xs text-ink-3 tabular-nums">
-          {trackedTotal}/{total} tracked
-          {trackerPending > 0 && <span className="ml-2 text-warn">· {trackerPending} pending tracker</span>}
+        <div className="flex items-center gap-3 text-xs text-ink-3">
+          <span className="tabular-nums">
+            {trackedTotal}/{total} tracked
+            {trackerPending > 0 && <span className="ml-2 text-warn">· {trackerPending} pending</span>}
+          </span>
+          <span className="h-3 w-px bg-line-2" />
+          <LastUpdated at={renderedAt} />
         </div>
       </div>
 

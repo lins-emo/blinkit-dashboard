@@ -130,75 +130,70 @@ export interface VehicleInfo {
 }
 
 // ---------- Vercel Data Cache wrappers ----------
-// `unstable_cache` is backed by Vercel's Data Cache in production:
-// shared across every serverless instance and across requests.
-// Keys are the args + the static `keyParts`. TTL is `revalidate` (seconds).
+// `unstable_cache` is backed by Vercel's Data Cache: shared across every serverless
+// instance and across requests. CRITICAL: the inner functions must THROW on error
+// (not return null/empty) — otherwise unstable_cache would happily cache the failure
+// for the full TTL, blanking out a rider for 60s. Outer wrappers catch and convert
+// to null so the UI can render "—".
 
-async function _fetchLastGps(vehicleno: string): Promise<LastGps | null> {
-  try { return await call<LastGps>("getlastgpsstatus", { vehicleno }); }
-  catch { return null; }
+async function _fetchLastGps(vehicleno: string): Promise<LastGps> {
+  return call<LastGps>("getlastgpsstatus", { vehicleno });
 }
 const cachedLastGps = unstable_cache(
   _fetchLastGps,
-  ["intellicar:lastGps:v1"],
+  ["intellicar:lastGps:v2"],
   { revalidate: 25, tags: ["intellicar", "live"] }
 );
 
-async function _fetchDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult | null> {
-  try {
-    return await call<DistanceResult>("getdistancetravelled", {
-      vehicleno,
-      starttime: String(starttime),
-      endtime: String(endtime),
-    });
-  } catch { return null; }
+async function _fetchDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult> {
+  return call<DistanceResult>("getdistancetravelled", {
+    vehicleno,
+    starttime: String(starttime),
+    endtime: String(endtime),
+  });
 }
 const cachedDistance = unstable_cache(
   _fetchDistance,
-  ["intellicar:distance:v1"],
+  ["intellicar:distance:v2"],
   { revalidate: 60, tags: ["intellicar", "distance"] }
 );
 
 async function _fetchGpsHistory(vehicleno: string, starttime: number, endtime: number): Promise<GpsHistoryPoint[]> {
-  try {
-    const points = await call<GpsHistoryPoint[]>("getgpshistory", {
-      vehicleno,
-      starttime: String(starttime),
-      endtime: String(endtime),
-    });
-    return points || [];
-  } catch { return []; }
+  const points = await call<GpsHistoryPoint[]>("getgpshistory", {
+    vehicleno,
+    starttime: String(starttime),
+    endtime: String(endtime),
+  });
+  return points || [];
 }
 const cachedGpsHistory = unstable_cache(
   _fetchGpsHistory,
-  ["intellicar:gpsHistory:v1"],
+  ["intellicar:gpsHistory:v2"],
   { revalidate: 60, tags: ["intellicar", "history"] }
 );
 
 async function _fetchVehicleSet(): Promise<string[]> {
-  try {
-    const list = await call<{ vehicleno: string }[]>("listvehicles", {});
-    return (list || []).map((v) => v.vehicleno);
-  } catch { return []; }
+  const list = await call<{ vehicleno: string }[]>("listvehicles", {});
+  return (list || []).map((v) => v.vehicleno);
 }
 const cachedVehicleSet = unstable_cache(
   _fetchVehicleSet,
-  ["intellicar:vehicleSet:v1"],
+  ["intellicar:vehicleSet:v2"],
   { revalidate: 300, tags: ["intellicar", "admin"] }
 );
 
-// ---------- Public API ----------
+// ---------- Public API (errors → null, not cached) ----------
 
 export async function getLastGps(vehicleno: string): Promise<LastGps | null> {
-  return cachedLastGps(vehicleno);
+  try { return await cachedLastGps(vehicleno); } catch { return null; }
 }
 
 export async function getDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult | null> {
-  return cachedDistance(vehicleno, starttime, endtime);
+  try { return await cachedDistance(vehicleno, starttime, endtime); } catch { return null; }
 }
 
 export async function getGpsHistory(vehicleno: string, starttime: number, endtime: number): Promise<GpsHistoryPoint[]> {
-  return cachedGpsHistory(vehicleno, starttime, endtime);
+  try { return await cachedGpsHistory(vehicleno, starttime, endtime); } catch { return []; }
 }
 
 export async function getVehicleInfo(vehicleno: string): Promise<VehicleInfo | null> {
@@ -210,8 +205,7 @@ export async function getVehicleInfo(vehicleno: string): Promise<VehicleInfo | n
 }
 
 export async function getProvisionedVehicleSet(): Promise<Set<string>> {
-  const arr = await cachedVehicleSet();
-  return new Set(arr);
+  try { return new Set(await cachedVehicleSet()); } catch { return new Set(); }
 }
 
 // ---------- Helpers ----------

@@ -85,3 +85,62 @@ export async function getRider(id: string): Promise<RiderDoc | null> {
   if (!ObjectId.isValid(id)) return null;
   return d.collection<RiderDoc>("riders").findOne({ _id: new ObjectId(id) });
 }
+
+// ---------- distance_floor: cross-lambda monotonic high-water marks ----------
+// We never display a distance lower than the highest value previously observed
+// for the same (vehicle, window) within a 1-hour TTL. Stored in Mongo so all
+// Vercel serverless instances share the same floor.
+
+interface FloorDoc { _id: string; value: number; updatedAt: Date }
+
+let floorIndexEnsured = false;
+async function ensureFloorIndex(): Promise<void> {
+  if (floorIndexEnsured) return;
+  try {
+    const d = await db();
+    await d.collection("distance_floor").createIndex(
+      { updatedAt: 1 },
+      { expireAfterSeconds: 3600, name: "ttl_1h" }
+    );
+    floorIndexEnsured = true;
+  } catch {
+    // best-effort; if index already exists, that's fine
+    floorIndexEnsured = true;
+  }
+}
+
+export async function readFloors(keys: string[]): Promise<Map<string, number>> {
+  if (keys.length === 0) return new Map();
+  await ensureFloorIndex();
+  const d = await db();
+  const cursor = d.collection<FloorDoc>("distance_floor").find({ _id: { $in: keys } });
+  const out = new Map<string, number>();
+  for await (const doc of cursor) out.set(doc._id, doc.value);
+  return out;
+}
+
+export async function writeFloor(key: string, value: number): Promise<void> {
+  await ensureFloorIndex();
+  const d = await db();
+  // $max ensures the value never goes down even under concurrent writes from
+  // different lambda instances. updatedAt always refreshes so TTL slides forward.
+  await d.collection("distance_floor").updateOne(
+    { _id: key } as never,
+    { $max: { value }, $set: { updatedAt: new Date() } },
+    { upsert: true }
+  );
+}
+
+export async function writeFloors(entries: Array<{ key: string; value: number }>): Promise<void> {
+  if (entries.length === 0) return;
+  await ensureFloorIndex();
+  const d = await db();
+  const ops = entries.map((e) => ({
+    updateOne: {
+      filter: { _id: e.key } as never,
+      update: { $max: { value: e.value }, $set: { updatedAt: new Date() } },
+      upsert: true,
+    },
+  }));
+  await d.collection("distance_floor").bulkWrite(ops, { ordered: false });
+}
