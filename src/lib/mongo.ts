@@ -1,4 +1,5 @@
 import { MongoClient, Db, ObjectId } from "mongodb";
+import { unstable_cache } from "next/cache";
 
 const uri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB ?? "test";
@@ -71,14 +72,17 @@ export interface RiderDoc {
 
 export const ridersFilter = { isBlinkitRider: true } as const;
 
-export async function listBlinkitRiders(): Promise<RiderDoc[]> {
+async function _listBlinkitRiders(): Promise<RiderDoc[]> {
   const d = await db();
-  return d
-    .collection<RiderDoc>("riders")
-    .find(ridersFilter)
-    .sort({ name: 1 })
-    .toArray();
+  return d.collection<RiderDoc>("riders").find(ridersFilter).sort({ name: 1 }).toArray();
 }
+
+// Rider docs change slowly (new onboardings, status flips) — cache 60s.
+export const listBlinkitRiders = unstable_cache(
+  _listBlinkitRiders,
+  ["mongo:blinkitRiders:v1"],
+  { revalidate: 60, tags: ["riders", "mongo"] }
+);
 
 export async function getRider(id: string): Promise<RiderDoc | null> {
   const d = await db();

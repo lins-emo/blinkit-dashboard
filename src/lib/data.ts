@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { listBlinkitRiders, getRider, readFloors, writeFloors, type RiderDoc } from "./mongo";
 import { getLastGps, getDistance, classifyStatus, getProvisionedVehicleSet, type LastGps, type LiveStatus } from "./intellicar";
 import { canonicalZone } from "@/config/zones";
@@ -90,8 +91,11 @@ function shape(rider: RiderDoc, gps: LastGps | null, distToday: number | null, d
   };
 }
 
-export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promise<RiderRow[]> {
-  const includeDistance = opts?.withDistance ?? true;
+// Page-level cache: every page within a 30s window returns the same fully-assembled
+// RiderRow[] from Vercel's Data Cache. This is the single biggest perceived-speed
+// win — instead of 75+ Intellicar calls + 2 Mongo queries on every render, every
+// hit within 30s reuses one JSON blob. Floor writes still happen on cache miss.
+async function _computeAllRiderRows(includeDistance: boolean): Promise<RiderRow[]> {
   const [riders, provisioned] = await Promise.all([listBlinkitRiders(), getProvisionedVehicleSet()]);
   const endBucket = bucketMin(Date.now());
   const todayStart = startOfTodayMs();
@@ -157,6 +161,16 @@ export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promis
   if (updates.length > 0) writeFloors(updates).catch(() => {});
 
   return rows;
+}
+
+const _cachedAllRiderRows = unstable_cache(
+  _computeAllRiderRows,
+  ["data:allRiderRows:v1"],
+  { revalidate: 30, tags: ["riders"] }
+);
+
+export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promise<RiderRow[]> {
+  return _cachedAllRiderRows(opts?.withDistance ?? true);
 }
 
 export async function getLiveOnly(): Promise<Array<Pick<RiderRow, "id" | "name" | "vehicleNo" | "liveStatus" | "liveSpeed" | "liveBattery" | "liveLat" | "liveLng" | "liveCommTime" | "zone">>> {
