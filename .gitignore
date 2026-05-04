@@ -36,6 +36,13 @@ yarn-error.log*
 # vercel
 .vercel
 
+# investigation scripts (kept locally, not shipped)
+/_investigate
+
+# Claude Code local settings (may include local paths and dev creds)
+.claude/
+
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Blinkit Fleet Dashboard
 
-## Getting Started
+Internal Emo dashboard for tracking the Blinkit-rider fleet (riders, vehicles, distance, behavior). Joins Mongo (rider profiles) with Intellicar (live telemetry).
 
-First, run the development server:
+## Setup
 
 ```bash
+npm install
+cp .env.example .env.local   # then fill in real values
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000 and log in with `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Var | Purpose |
+| --- | --- |
+| `MONGODB_URI` | Atlas connection string. Database `test`. |
+| `MONGODB_DB` | Defaults to `test`. |
+| `INTELLICAR_BASE_URL` | `https://apiplatform.intellicar.in/api/standard` |
+| `INTELLICAR_USERNAME` / `INTELLICAR_PASSWORD` | Service account that can read fleet telemetry. |
+| `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` | Single shared login. |
+| `SESSION_SECRET` | 32+ char random string for cookie encryption. |
 
-## Learn More
+## Architecture
 
-To learn more about Next.js, take a look at the following resources:
+- **Next.js 15** App Router, server components, single API per data shape.
+- **Mongo native driver** — `test.riders` filtered by `isBlinkitRider: true`. Vehicle join key is `vehicleAssigned.vehicleId` ↔ Intellicar `vehicleno` (Indian registration plate).
+- **Intellicar** — token cached in module memory (~14d TTL, refresh on 401). Live GPS cached 25s; GPS history cached 60s.
+- **Behavior** derivation in `src/lib/behavior.ts` — splits GPS history into trips by ignition gaps, computes distance, idle, max/avg speed, harsh accel/brake proxies (km/h Δ per second), battery dips.
+- **Auth** — `iron-session` cookie + `src/middleware.ts` gate. Single user pulled from env.
+- **Map** — MapLibre + Carto Positron tiles (no API key).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Project layout
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+src/
+  app/                          # routes
+    page.tsx                    # / overview
+    riders/page.tsx             # /riders index
+    riders/[id]/page.tsx        # /riders/:id detail
+    zones/[zone]/page.tsx       # /zones/:zone
+    login/page.tsx
+    api/auth/{login,logout}/route.ts
+    api/riders/route.ts
+    api/riders/[id]/history/route.ts
+    api/live/route.ts
+  components/                   # UI
+  lib/                          # mongo, intellicar, behavior, auth, data
+  config/zones.ts               # canonical-zone alias map
+  middleware.ts                 # auth gate
+```
 
-## Deploy on Vercel
+## Deploying to Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Push to GitHub.
+2. Import in Vercel.
+3. Add every env var from `.env.local` to the Vercel project settings.
+4. Atlas IP allowlist must include `0.0.0.0/0` (or Vercel's egress IPs).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Operational notes
+
+- The `test` database (despite its name) is the live production-current dataset. Last update times track real activity.
+- The Blinkit subset is `{ isBlinkitRider: true }` — currently 25 riders.
+- Many `DL3SGH****` plates in our Blinkit fleet currently return "Permission failure" from Intellicar — they need to be added to the `emo_pull` account before live data appears for them.
+- Zone names in Mongo are free-text and dirty; the canonical mapping is in `src/config/zones.ts`. Add new aliases there as new variations appear.
+
+## Local helpers
+
+`_investigate/` contains throwaway Node scripts used during initial schema discovery. Gitignored.
