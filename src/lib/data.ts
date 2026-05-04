@@ -41,6 +41,11 @@ function startOfTodayMs(): number {
   return d.getTime();
 }
 
+// Round to a 60-second bucket so cache keys are stable for the same UI minute.
+function bucketMin(ms: number): number {
+  return Math.floor(ms / 60_000) * 60_000;
+}
+
 function shape(rider: RiderDoc, gps: LastGps | null, distToday: number | null, dist7d: number | null, notOnIntellicar: boolean): RiderRow {
   const vehicleNo = rider.vehicleAssigned?.vehicleId?.trim() || null;
   const vs = rider.vehicleStatus;
@@ -80,9 +85,9 @@ function shape(rider: RiderDoc, gps: LastGps | null, distToday: number | null, d
 export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promise<RiderRow[]> {
   const includeDistance = opts?.withDistance ?? true;
   const [riders, provisioned] = await Promise.all([listBlinkitRiders(), getProvisionedVehicleSet()]);
-  const now = Date.now();
+  const endBucket = bucketMin(Date.now());
   const todayStart = startOfTodayMs();
-  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const sevenDaysAgo = endBucket - 7 * 24 * 60 * 60 * 1000;
 
   const rows = await Promise.all(
     riders.map(async (r) => {
@@ -92,8 +97,8 @@ export async function getAllRiderRows(opts?: { withDistance?: boolean }): Promis
       if (!onIntellicar) return shape(r, null, null, null, true);
       const [gps, dToday, d7d] = await Promise.all([
         getLastGps(v),
-        includeDistance ? getDistance(v, todayStart, now) : Promise.resolve(null),
-        includeDistance ? getDistance(v, sevenDaysAgo, now) : Promise.resolve(null),
+        includeDistance ? getDistance(v, todayStart, endBucket) : Promise.resolve(null),
+        includeDistance ? getDistance(v, sevenDaysAgo, endBucket) : Promise.resolve(null),
       ]);
       return shape(r, gps, dToday?.distance ?? null, d7d?.distance ?? null, false);
     })
@@ -132,13 +137,13 @@ export async function getRiderRowById(id: string): Promise<RiderRow | null> {
   if (!v || /^Testing/i.test(v)) return shape(r, null, null, null, false);
   const provisioned = await getProvisionedVehicleSet();
   if (!provisioned.has(v)) return shape(r, null, null, null, true);
-  const now = Date.now();
+  const endBucket = bucketMin(Date.now());
   const todayStart = startOfTodayMs();
-  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const sevenDaysAgo = endBucket - 7 * 24 * 60 * 60 * 1000;
   const [gps, dToday, d7d] = await Promise.all([
     getLastGps(v),
-    getDistance(v, todayStart, now),
-    getDistance(v, sevenDaysAgo, now),
+    getDistance(v, todayStart, endBucket),
+    getDistance(v, sevenDaysAgo, endBucket),
   ]);
   return shape(r, gps, dToday?.distance ?? null, d7d?.distance ?? null, false);
 }

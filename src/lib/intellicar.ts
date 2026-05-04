@@ -18,14 +18,19 @@ declare global {
   var __liveGpsCache: Map<string, { fetchedAt: number; data: LastGps | null }> | undefined;
   // eslint-disable-next-line no-var
   var __vehicleSet: { fetchedAt: number; set: Set<string> } | undefined;
+  // eslint-disable-next-line no-var
+  var __distanceCache: Map<string, { fetchedAt: number; data: DistanceResult | null }> | undefined;
 }
 
 const HISTORY_TTL_MS = 60_000;
 const LIVE_TTL_MS = 25_000;
-const TOKEN_REFRESH_BEFORE_MS = 12 * 60 * 60 * 1000; // refresh 12h before expiry
+const DISTANCE_TTL_MS = 60_000;          // re-fetch distances at most once per minute
+const STALE_FALLBACK_MS = 10 * 60_000;   // keep showing stale value for 10 min if fresh fetch fails
+const TOKEN_REFRESH_BEFORE_MS = 12 * 60 * 60 * 1000;
 
 if (!global.__gpsHistoryCache) global.__gpsHistoryCache = new Map();
 if (!global.__liveGpsCache) global.__liveGpsCache = new Map();
+if (!global.__distanceCache) global.__distanceCache = new Map();
 
 async function fetchToken(): Promise<string> {
   const r = await fetch(`${BASE}/gettoken`, {
@@ -146,19 +151,31 @@ export async function getLastGps(vehicleno: string): Promise<LastGps | null> {
     cache.set(vehicleno, { fetchedAt: now, data });
     return data;
   } catch {
+    // Stale-on-error: keep showing previous value if reasonably recent
+    if (c && now - c.fetchedAt < STALE_FALLBACK_MS && c.data) return c.data;
     cache.set(vehicleno, { fetchedAt: now, data: null });
     return null;
   }
 }
 
 export async function getDistance(vehicleno: string, starttime: number, endtime: number): Promise<DistanceResult | null> {
+  const cache = global.__distanceCache!;
+  const key = `${vehicleno}|${starttime}|${endtime}`;
+  const c = cache.get(key);
+  const now = Date.now();
+  if (c && now - c.fetchedAt < DISTANCE_TTL_MS) return c.data;
   try {
-    return await call<DistanceResult>("getdistancetravelled", {
+    const data = await call<DistanceResult>("getdistancetravelled", {
       vehicleno,
       starttime: String(starttime),
       endtime: String(endtime),
     });
+    cache.set(key, { fetchedAt: now, data });
+    return data;
   } catch {
+    // Stale-on-error: keep showing previous value if reasonably recent
+    if (c && now - c.fetchedAt < STALE_FALLBACK_MS && c.data) return c.data;
+    cache.set(key, { fetchedAt: now, data: null });
     return null;
   }
 }
