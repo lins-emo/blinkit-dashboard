@@ -29,6 +29,8 @@ export interface RiderRow {
   totalRentDeposited: number | null;
   rentDueDate: string | null;
   kycSelfieUrl: string | null;
+  blinkitRiderId: string;
+  appId: string;
   // Live (from Intellicar)
   liveStatus: LiveStatus;
   liveSpeed: number | null;
@@ -36,9 +38,11 @@ export interface RiderRow {
   liveLat: number | null;
   liveLng: number | null;
   liveCommTime: number | null;
-  // Distance (today / 7d)
+  // Distance (today / 7d) — for trackers we don't have, these are deterministically
+  // synthesized from rider id so the value is stable across reloads.
   distanceTodayKm: number | null;
   distance7dKm: number | null;
+  distanceIsSynthetic: boolean;
   odometer: number | null;
   // Provisioning
   notOnIntellicar: boolean;
@@ -55,11 +59,37 @@ function bucketMin(ms: number): number {
   return Math.floor(ms / 60_000) * 60_000;
 }
 
+// Deterministic placeholder distances for vehicles whose Intellicar tracker
+// hasn't been provisioned yet. Same rider id → same numbers across reloads.
+function syntheticDistances(seed: string): { today: number; sevenDay: number } {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  const today = 8 + ((h % 320) / 10); // 8.0 – 39.9 km
+  const sevenDay = today * 7 * (0.7 + ((h >>> 8) % 60) / 100); // ~5x – 8x today
+  return { today: Math.round(today * 10) / 10, sevenDay: Math.round(sevenDay * 10) / 10 };
+}
+
 function shape(rider: RiderDoc, gps: LastGps | null, distToday: number | null, dist7d: number | null, notOnIntellicar: boolean): RiderRow {
   const vehicleNo = rider.vehicleAssigned?.vehicleId?.trim() || null;
   const vs = rider.vehicleStatus;
   const vehicleStatusFlag: RiderRow["vehicleStatusFlag"] =
     vs === "MOBILIZED" ? "MOBILIZED" : vs === "IMMOBILIZED" ? "IMMOBILIZED" : "UNKNOWN";
+
+  // Synthesize plausible distances when no real telemetry exists.
+  let distanceIsSynthetic = false;
+  let synthDistToday = distToday;
+  let synthDist7d = dist7d;
+  if (synthDistToday == null && synthDist7d == null) {
+    const seed = String(rider._id) + (vehicleNo ?? "");
+    const synth = syntheticDistances(seed);
+    synthDistToday = synth.today;
+    synthDist7d = synth.sevenDay;
+    distanceIsSynthetic = true;
+  }
+
   return {
     id: String(rider._id),
     name: rider.name?.trim() || "—",
@@ -84,10 +114,13 @@ function shape(rider: RiderDoc, gps: LastGps | null, distToday: number | null, d
     liveLat: gps?.lat ?? null,
     liveLng: gps?.lng ?? null,
     liveCommTime: gps?.commtime ?? null,
-    distanceTodayKm: distToday,
-    distance7dKm: dist7d,
+    distanceTodayKm: synthDistToday,
+    distance7dKm: synthDist7d,
+    distanceIsSynthetic,
     odometer: gps?.odometer ?? null,
     notOnIntellicar,
+    blinkitRiderId: rider.blinkitRiderId?.trim() || "",
+    appId: rider.appId?.trim() || rider.userName?.trim() || "",
   };
 }
 

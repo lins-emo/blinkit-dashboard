@@ -63,6 +63,7 @@ export interface RiderDoc {
   totalAmount?: number;
   depositAmountPaid?: number;
   appId?: string;
+  blinkitRiderId?: string;
   userName?: string;
   createdAt?: Date;
   updatedAt?: Date;

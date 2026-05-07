@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { RiderRow } from "@/lib/data";
+import { ridersToCsv, downloadCsv } from "@/lib/csv";
 import { LiveStatusPill, VehicleStatusPill, NotProvisionedPill } from "./StatusPill";
 import Avatar from "./Avatar";
 
@@ -48,7 +49,7 @@ function SortHeader({ label, k, sortKey, sortDir, onSort, align = "left" }: {
   );
 }
 
-export default function RidersTable({ rows }: { rows: RiderRow[] }) {
+export default function RidersTable({ rows, downloadName = "blinkit-riders" }: { rows: RiderRow[]; downloadName?: string }) {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("distance7dKm");
@@ -108,6 +109,22 @@ export default function RidersTable({ rows }: { rows: RiderRow[] }) {
           <option value="unknown">Unknown</option>
           {trackerPendingCount > 0 && <option value="tracker-pending">Tracker pending ({trackerPendingCount})</option>}
         </select>
+        <button
+          type="button"
+          onClick={() => {
+            const stamp = new Date().toISOString().slice(0, 10);
+            downloadCsv(`${downloadName}-${stamp}.csv`, ridersToCsv(filtered));
+          }}
+          className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 border border-line-2 rounded-md bg-bg hover:bg-surface hover:border-accent/40 transition"
+          title="Download visible rows as CSV"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          CSV
+        </button>
         <span className="text-xs text-ink-3 ml-auto tabular-nums">{filtered.length} of {rows.length}</span>
       </div>
       <div className="overflow-x-auto">

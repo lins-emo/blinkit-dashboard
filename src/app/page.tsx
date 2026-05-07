@@ -70,89 +70,44 @@ export default async function OverviewPage() {
           sub={lowBat > 0 ? <span><span className="text-bad font-medium">{lowBat}</span> low battery (&lt;20%)</span> : "All batteries OK"} />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
-        <div className="rounded-card border border-line bg-surface overflow-hidden">
-          <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-            <div className="text-sm font-medium text-ink">Top movers · 7 days</div>
-            <Link href="/riders" className="text-xs text-ink-3 hover:text-ink">View all →</Link>
-          </div>
-          <table className="w-full text-sm">
-            <tbody>
-              {[...rows]
-                .filter((r) => (r.distance7dKm ?? 0) > 0)
-                .sort((a, b) => (b.distance7dKm ?? 0) - (a.distance7dKm ?? 0))
-                .slice(0, 8)
-                .map((r) => (
-                  <tr key={r.id} className="border-t border-line first:border-0 hover:bg-bg/70 transition">
-                    <td className="px-4 py-2.5">
-                      <Link href={`/riders/${r.id}`} className="flex items-center gap-2.5">
-                        <Avatar name={r.name} src={r.kycSelfieUrl} size={28} />
-                        <div className="min-w-0">
-                          <div className="font-medium text-ink truncate">{r.name}</div>
-                          <div className="text-xs text-ink-3 truncate">{r.zone}</div>
-                        </div>
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2.5"><LiveStatusPill status={r.liveStatus} /></td>
-                    <td className="px-4 py-2.5 text-right">
-                      <div className="font-semibold tabular-nums text-ink">{(r.distance7dKm ?? 0).toFixed(1)} km</div>
-                      <div className="text-[11px] text-ink-3 tabular-nums">{(r.distanceTodayKm ?? 0).toFixed(1)} km today</div>
-                    </td>
-                  </tr>
-                ))}
-              {rows.filter((r) => (r.distance7dKm ?? 0) > 0).length === 0 && (
-                <tr><td className="px-4 py-12 text-center text-ink-3 text-sm">No rides recorded in the last 7 days.</td></tr>
-              )}
-            </tbody>
-          </table>
+      <div className="rounded-card border border-line bg-surface overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+          <div className="text-sm font-medium text-ink">Top movers · last 7 days</div>
+          <Link href="/riders" className="text-xs text-ink-3 hover:text-ink">View all riders →</Link>
         </div>
-
-        <div className="rounded-card border border-line bg-surface overflow-hidden">
-          <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-            <div className="text-sm font-medium text-ink">Needs attention</div>
-            <span className="text-xs text-ink-3 tabular-nums">
-              {rows.filter((r) => r.notOnIntellicar || r.vehicleStatusFlag === "IMMOBILIZED" || (r.liveBattery != null && r.liveBattery < 20) || r.bmsUnresponsive || r.freezeStatus).length}
-            </span>
-          </div>
-          <div className="divide-y divide-line max-h-[420px] overflow-y-auto">
-            {rows
-              .map((r) => {
-                const issues: { kind: "bad" | "warn"; label: string }[] = [];
-                if (r.vehicleStatusFlag === "IMMOBILIZED") issues.push({ kind: "bad", label: "Immobilized" });
-                if (r.freezeStatus) issues.push({ kind: "bad", label: "Frozen" });
-                if (r.bmsUnresponsive) issues.push({ kind: "warn", label: "BMS unresponsive" });
-                if (r.liveBattery != null && r.liveBattery < 20) issues.push({ kind: "bad", label: `Battery ${r.liveBattery.toFixed(0)}%` });
-                if (r.notOnIntellicar) issues.push({ kind: "warn", label: "Tracker pending" });
-                if (r.avgRentDelayDays != null && r.avgRentDelayDays > 5) issues.push({ kind: "warn", label: `Rent delay ${r.avgRentDelayDays.toFixed(1)}d avg` });
-                return { r, issues };
-              })
-              .filter((x) => x.issues.length > 0)
-              .sort((a, b) => b.issues.filter(i => i.kind === "bad").length - a.issues.filter(i => i.kind === "bad").length)
-              .slice(0, 12)
-              .map(({ r, issues }) => (
-                <Link key={r.id} href={`/riders/${r.id}`} className="block px-4 py-2.5 hover:bg-bg/70 transition">
-                  <div className="flex items-center gap-2.5">
-                    <Avatar name={r.name} src={r.kycSelfieUrl} size={28} />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-ink text-sm truncate">{r.name}</div>
-                      <div className="text-xs text-ink-3 truncate">{r.zone} · {r.vehicleNo ?? "—"}</div>
-                    </div>
-                    <div className="flex items-center gap-1 flex-wrap justify-end">
-                      {issues.slice(0, 2).map((i, idx) => (
-                        <span key={idx} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${i.kind === "bad" ? "bg-bad/8 text-bad border-bad/20" : "bg-warn/8 text-warn border-warn/25"}`}>
-                          {i.label}
-                        </span>
-                      ))}
-                      {issues.length > 2 && <span className="text-[10px] text-ink-3">+{issues.length - 2}</span>}
-                    </div>
-                  </div>
-                </Link>
+        <table className="w-full text-sm">
+          <tbody>
+            {[...rows]
+              .sort((a, b) => (b.distance7dKm ?? 0) - (a.distance7dKm ?? 0))
+              .slice(0, 10)
+              .map((r) => (
+                <tr key={r.id} className="border-t border-line first:border-0 hover:bg-bg/70 transition">
+                  <td className="px-4 py-2.5 w-[40%]">
+                    <Link href={`/riders/${r.id}`} className="flex items-center gap-2.5">
+                      <Avatar name={r.name} src={r.kycSelfieUrl} size={28} />
+                      <div className="min-w-0">
+                        <div className="font-medium text-ink truncate">{r.name}</div>
+                        <div className="text-xs text-ink-3 truncate">{r.zone} · {r.vehicleNo ?? "—"}</div>
+                      </div>
+                    </Link>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {r.notOnIntellicar ? <NotProvisionedPill /> : <LiveStatusPill status={r.liveStatus} />}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-ink-2">
+                    {(r.distanceTodayKm ?? 0).toFixed(1)} <span className="text-[11px] text-ink-3">km today</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="font-semibold tabular-nums text-ink">{(r.distance7dKm ?? 0).toFixed(1)} km</div>
+                    <div className="text-[11px] text-ink-3">7-day total</div>
+                  </td>
+                </tr>
               ))}
-            {rows.every((r) => !r.notOnIntellicar && r.vehicleStatusFlag !== "IMMOBILIZED" && !(r.liveBattery != null && r.liveBattery < 20) && !r.bmsUnresponsive && !r.freezeStatus) && (
-              <div className="px-4 py-12 text-center text-ink-3 text-sm">All clear — no issues.</div>
+            {rows.length === 0 && (
+              <tr><td className="px-4 py-12 text-center text-ink-3 text-sm">No riders.</td></tr>
             )}
-          </div>
-        </div>
+          </tbody>
+        </table>
       </div>
 
       <div className="rounded-card border border-line bg-surface overflow-hidden">
