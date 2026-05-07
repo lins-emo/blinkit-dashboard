@@ -26,9 +26,6 @@ const COLUMNS: { header: string; get: (r: RiderRow) => string | number | null }[
   { header: "Odometer (km)",       get: (r) => r.odometer != null ? r.odometer.toFixed(0) : "" },
   { header: "Last Seen",           get: (r) => r.liveCommTime ? new Date(r.liveCommTime).toISOString() : "" },
   { header: "Tracker Provisioned", get: (r) => r.notOnIntellicar ? "no" : "yes" },
-  { header: "Avg Rent Delay (d)",  get: (r) => r.avgRentDelayDays != null ? r.avgRentDelayDays.toFixed(2) : "" },
-  { header: "Deposit Paid (₹)",    get: (r) => r.totalRentDeposited ?? "" },
-  { header: "KYC Selfie URL",      get: (r) => r.kycSelfieUrl ?? "" },
 ];
 
 export function ridersToCsv(rows: RiderRow[]): string {
