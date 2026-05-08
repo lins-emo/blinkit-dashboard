@@ -25,7 +25,6 @@ const COLUMNS: { header: string; get: (r: RiderRow) => string | number | null }[
   { header: "Distance 7d (km)",    get: (r) => r.distance7dKm != null ? r.distance7dKm.toFixed(1) : "" },
   { header: "Odometer (km)",       get: (r) => r.odometer != null ? r.odometer.toFixed(0) : "" },
   { header: "Last Seen",           get: (r) => r.liveCommTime ? new Date(r.liveCommTime).toISOString() : "" },
-  { header: "Tracker Provisioned", get: (r) => r.notOnIntellicar ? "no" : "yes" },
 ];
 
 export function ridersToCsv(rows: RiderRow[]): string {

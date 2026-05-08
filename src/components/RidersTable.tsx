@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { RiderRow } from "@/lib/data";
 import { ridersToCsv, downloadCsv } from "@/lib/csv";
-import { LiveStatusPill, VehicleStatusPill, NotProvisionedPill } from "./StatusPill";
+import { LiveStatusPill, VehicleStatusPill } from "./StatusPill";
 import Avatar from "./Avatar";
 
 type SortKey = "name" | "zone" | "distanceTodayKm" | "distance7dKm" | "liveSpeed" | "liveBattery" | "liveCommTime";
@@ -62,8 +62,7 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
 
   const filtered = useMemo(() => {
     const filt = rows.filter((r) => {
-      if (status === "tracker-pending") { if (!r.notOnIntellicar) return false; }
-      else if (status !== "all" && r.liveStatus !== status) return false;
+      if (status !== "all" && r.liveStatus !== status) return false;
       if (!q) return true;
       const hay = `${r.name} ${r.phone} ${r.vehicleNo ?? ""} ${r.zone} ${r.city}`.toLowerCase();
       return hay.includes(q.toLowerCase());
@@ -82,7 +81,6 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
     return sorted;
   }, [rows, q, status, sortKey, sortDir]);
 
-  const trackerPendingCount = rows.filter((r) => r.notOnIntellicar).length;
 
   return (
     <div className="rounded-card border border-line bg-surface overflow-hidden">
@@ -107,7 +105,6 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
           <option value="parked">Parked</option>
           <option value="offline">Offline</option>
           <option value="unknown">Unknown</option>
-          {trackerPendingCount > 0 && <option value="tracker-pending">Tracker pending ({trackerPendingCount})</option>}
         </select>
         <button
           type="button"
@@ -151,7 +148,10 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
                     <Avatar name={r.name} src={r.kycSelfieUrl} size={28} />
                     <div className="min-w-0">
                       <div className="font-medium text-ink group-hover:underline truncate">{r.name}</div>
-                      <div className="text-xs text-ink-3 truncate">{r.phone || "—"}</div>
+                      <div className="text-xs text-ink-3 truncate font-mono">
+                        {r.blinkitRiderId || r.appId || "—"}
+                        {r.phone && <span className="font-sans"> · {r.phone}</span>}
+                      </div>
                     </div>
                   </Link>
                 </td>
@@ -166,9 +166,7 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
                 <td className={`px-3 py-2.5 text-right tabular-nums ${batteryClass(r.liveBattery)}`}>
                   {r.liveBattery == null ? "—" : `${r.liveBattery.toFixed(0)}%`}
                 </td>
-                <td className="px-3 py-2.5">
-                  {r.notOnIntellicar ? <NotProvisionedPill /> : <LiveStatusPill status={r.liveStatus} />}
-                </td>
+                <td className="px-3 py-2.5"><LiveStatusPill status={r.liveStatus} /></td>
                 <td className="px-3 py-2.5"><VehicleStatusPill status={r.vehicleStatusFlag} /></td>
                 <td className="px-4 py-2.5 text-right text-xs text-ink-3 tabular-nums">{fmtAge(r.liveCommTime)}</td>
               </tr>

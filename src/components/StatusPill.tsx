@@ -48,11 +48,3 @@ export function VehicleStatusPill({ status }: { status: string }) {
   );
 }
 
-export function NotProvisionedPill() {
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium border rounded-full bg-warn/10 text-warn border-warn/25">
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      Tracker pending
-    </span>
-  );
-}

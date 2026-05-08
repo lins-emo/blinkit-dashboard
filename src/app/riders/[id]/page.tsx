@@ -3,7 +3,7 @@ import Shell from "@/components/Shell";
 import KpiCard from "@/components/KpiCard";
 import Avatar from "@/components/Avatar";
 import Sparkline from "@/components/Sparkline";
-import { LiveStatusPill, VehicleStatusPill, NotProvisionedPill } from "@/components/StatusPill";
+import { LiveStatusPill, VehicleStatusPill } from "@/components/StatusPill";
 import { getRiderRowById, getRiderDoc, getDailyDistanceSeries } from "@/lib/data";
 import { getGpsHistory } from "@/lib/intellicar";
 import { summarize } from "@/lib/behavior";
@@ -60,8 +60,22 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
             <span>{row.zone}</span>
             {row.landmark && (<><span>·</span><span>{row.landmark}</span></>)}
           </div>
+          <div className="mt-2 flex items-center gap-3 text-[11px] flex-wrap">
+            {row.blinkitRiderId && (
+              <span className="text-ink-3">
+                <span className="uppercase tracking-wider">Blinkit ID</span>{" "}
+                <span className="font-mono text-ink-2 font-medium">{row.blinkitRiderId}</span>
+              </span>
+            )}
+            {row.appId && (
+              <span className="text-ink-3">
+                <span className="uppercase tracking-wider">App ID</span>{" "}
+                <span className="font-mono text-ink-2 font-medium">{row.appId}</span>
+              </span>
+            )}
+          </div>
           <div className="mt-3 flex items-center gap-2 flex-wrap">
-            {row.notOnIntellicar ? <NotProvisionedPill /> : <LiveStatusPill status={row.liveStatus} />}
+            <LiveStatusPill status={row.liveStatus} />
             <VehicleStatusPill status={row.vehicleStatusFlag} />
             {row.freezeStatus && <span className="text-[11px] px-2 py-0.5 rounded-full bg-bad/10 text-bad border border-bad/25 font-medium">Frozen</span>}
             {row.bmsUnresponsive && <span className="text-[11px] px-2 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/25 font-medium">BMS unresponsive</span>}
@@ -70,15 +84,6 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
         </div>
       </div>
 
-      {row.notOnIntellicar && (
-        <div className="mb-5 rounded-card border border-warn/30 bg-warn/5 p-3.5 flex items-start gap-3 text-sm">
-          <svg className="text-warn shrink-0 mt-0.5" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <div>
-            <div className="font-medium text-ink">This vehicle is not on Intellicar yet</div>
-            <div className="text-ink-2 mt-0.5 text-xs">No live data, distance, or trip history available until the IoT tracker is provisioned for <code className="font-mono">{row.vehicleNo}</code>.</div>
-          </div>
-        </div>
-      )}
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
         <KpiCard label="Today" value={`${(row.distanceTodayKm ?? 0).toFixed(1)} km`} tone="accent" />
@@ -141,7 +146,7 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
               </thead>
               <tbody>
                 {summary.trips.length === 0 && <tr><td colSpan={5} className="px-4 py-12 text-center text-ink-3">
-                  <div>{row.notOnIntellicar ? "Tracker not provisioned." : "No trips in the last 24 hours."}</div>
+                  <div>No trips in the last 24 hours.</div>
                 </td></tr>}
                 {summary.trips.slice().reverse().map((t, i) => (
                   <tr key={i} className="border-t border-line hover:bg-bg/60 transition">

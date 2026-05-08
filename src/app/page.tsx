@@ -2,7 +2,7 @@ import Link from "next/link";
 import Shell from "@/components/Shell";
 import KpiCard from "@/components/KpiCard";
 import Avatar from "@/components/Avatar";
-import { LiveStatusPill, NotProvisionedPill } from "@/components/StatusPill";
+import { LiveStatusPill } from "@/components/StatusPill";
 import LastUpdated from "@/components/LastUpdated";
 import { getAllRiderRows } from "@/lib/data";
 
@@ -14,8 +14,6 @@ export default async function OverviewPage() {
   const rows = await getAllRiderRows();
 
   const total = rows.length;
-  const trackerPending = rows.filter((r) => r.notOnIntellicar).length;
-  const trackedTotal = total - trackerPending;
   const onTrip = rows.filter((r) => r.liveStatus === "on-trip").length;
   const idle = rows.filter((r) => r.liveStatus === "idle").length;
   const parked = rows.filter((r) => r.liveStatus === "parked").length;
@@ -25,14 +23,13 @@ export default async function OverviewPage() {
   const lowBat = rows.filter((r) => r.liveBattery != null && r.liveBattery < 20).length;
   const immobilized = rows.filter((r) => r.vehicleStatusFlag === "IMMOBILIZED").length;
 
-  const byZone = new Map<string, { count: number; distToday: number; dist7d: number; onTrip: number; trackerPending: number }>();
+  const byZone = new Map<string, { count: number; distToday: number; dist7d: number; onTrip: number }>();
   for (const r of rows) {
-    const z = byZone.get(r.zone) ?? { count: 0, distToday: 0, dist7d: 0, onTrip: 0, trackerPending: 0 };
+    const z = byZone.get(r.zone) ?? { count: 0, distToday: 0, dist7d: 0, onTrip: 0 };
     z.count += 1;
     z.distToday += r.distanceTodayKm ?? 0;
     z.dist7d += r.distance7dKm ?? 0;
     if (r.liveStatus === "on-trip") z.onTrip += 1;
-    if (r.notOnIntellicar) z.trackerPending += 1;
     byZone.set(r.zone, z);
   }
   const zones = [...byZone.entries()].sort((a, b) => b[1].count - a[1].count);
@@ -48,11 +45,6 @@ export default async function OverviewPage() {
           <p className="text-sm text-ink-3 mt-0.5">Live status across all Blinkit riders.</p>
         </div>
         <div className="flex items-center gap-3 text-xs text-ink-3">
-          <span className="tabular-nums">
-            {trackedTotal}/{total} tracked
-            {trackerPending > 0 && <span className="ml-2 text-warn">· {trackerPending} pending</span>}
-          </span>
-          <span className="h-3 w-px bg-line-2" />
           <LastUpdated at={renderedAt} />
         </div>
       </div>
@@ -92,7 +84,7 @@ export default async function OverviewPage() {
                     </Link>
                   </td>
                   <td className="px-3 py-2.5">
-                    {r.notOnIntellicar ? <NotProvisionedPill /> : <LiveStatusPill status={r.liveStatus} />}
+                    <LiveStatusPill status={r.liveStatus} />
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-ink-2">
                     {(r.distanceTodayKm ?? 0).toFixed(1)} <span className="text-[11px] text-ink-3">km today</span>
@@ -131,7 +123,6 @@ export default async function OverviewPage() {
                 <tr key={zone} className="border-t border-line hover:bg-bg/70 transition">
                   <td className="px-4 py-2.5">
                     <Link href={`/zones/${encodeURIComponent(zone)}`} className="font-medium text-ink hover:underline">{zone}</Link>
-                    {z.trackerPending > 0 && <span className="ml-2 text-[10px] uppercase tracking-wider text-warn">{z.trackerPending} pending</span>}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{z.count}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">
