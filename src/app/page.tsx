@@ -79,7 +79,9 @@ export default async function OverviewPage() {
                       <Avatar name={r.name} src={r.kycSelfieUrl} size={28} />
                       <div className="min-w-0">
                         <div className="font-medium text-ink truncate">{r.name}</div>
-                        <div className="text-xs text-ink-3 truncate">{r.zone} · {r.vehicleNo ?? "—"}</div>
+                        <div className="text-xs text-ink-3 truncate">
+                          <span className="font-mono">{r.blinkitRiderId || r.appId || "—"}</span> · {r.zone} · {r.vehicleNo ?? "—"}
+                        </div>
                       </div>
                     </Link>
                   </td>
