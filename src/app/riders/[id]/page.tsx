@@ -3,6 +3,7 @@ import Shell from "@/components/Shell";
 import KpiCard from "@/components/KpiCard";
 import Avatar from "@/components/Avatar";
 import Sparkline from "@/components/Sparkline";
+import LivePack from "@/components/LivePack";
 import { LiveStatusPill, VehicleStatusPill } from "@/components/StatusPill";
 import { getRiderRowById, getRiderDoc, getDailyDistanceSeries } from "@/lib/data";
 import { getPackInfoForVehicles, type PackInfo } from "@/lib/mongo";
@@ -80,6 +81,20 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
           </div>
         </div>
       </div>
+
+      {row.batteryId && (
+        <LivePack
+          packId={row.batteryId}
+          initial={{
+            soc: row.liveBattery,
+            speed: row.liveSpeed,
+            voltage: row.packVoltage,
+            current: row.packCurrent,
+            cycleCount: row.cycleCount,
+            lastSeen: row.liveCommTime,
+          }}
+        />
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
         <KpiCard label="Today" value={`${(row.distanceTodayKm ?? 0).toFixed(1)} km`} tone="accent" />
