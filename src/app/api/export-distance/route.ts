@@ -1,0 +1,178 @@
+import { NextResponse } from "next/server";
+import { listBlinkitRiders, getPackInfoForVehicles } from "@/lib/mongo";
+import { getDeviceTriples, getReportBatch, distanceFromReport, KM_PER_KWH, type ReportData } from "@/lib/sensiot";
+import { getIntellicarVehicleSet, getIntellicarDistance } from "@/lib/intellicar";
+import { canonicalZone } from "@/config/zones";
+import { session } from "@/lib/auth";
+
+export const dynamic = "force-dynamic";
+
+interface ExportRow {
+  riderId: string;
+  name: string;
+  phone: string;
+  blinkitRiderId: string;
+  appId: string;
+  city: string;
+  zone: string;
+  vehicleNo: string;
+  batteryId: string;
+  bmsId: string;
+  packModel: string;
+  date: string;          // YYYY-MM-DD (IST)
+  distanceKm: number | null;
+  energyKwh: number | null;
+  cycleIncrement: number | null;
+  source: "sensiot" | "sensiot-energy" | "intellicar" | "none";
+}
+
+// Build a list of YYYY-MM-DD strings from inclusive `from` to inclusive `to`.
+function dateRange(from: string, to: string): string[] {
+  const out: string[] = [];
+  const start = new Date(from + "T00:00:00Z");
+  const end = new Date(to + "T00:00:00Z");
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end < start) return [];
+  const max = 31;
+  for (let d = new Date(start), i = 0; d <= end && i < max; d.setUTCDate(d.getUTCDate() + 1), i++) {
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+export async function POST(req: Request) {
+  const s = await session();
+  if (!s.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const body = await req.json().catch(() => ({}));
+  const from: string = body?.from;
+  const to: string = body?.to;
+  const onlyRiderIds: string[] | undefined = Array.isArray(body?.riderIds) ? body.riderIds : undefined;
+  if (!from || !to) return NextResponse.json({ error: "from and to required (YYYY-MM-DD)" }, { status: 400 });
+  const dates = dateRange(from, to);
+  if (dates.length === 0) return NextResponse.json({ error: "invalid date range (max 31 days)" }, { status: 400 });
+
+  // 1. Riders + pack info + sensiot triples + intellicar set in parallel
+  const allRiders = await listBlinkitRiders();
+  const riders = onlyRiderIds ? allRiders.filter((r) => onlyRiderIds.includes(String(r._id))) : allRiders;
+  const vehicleIds = riders
+    .map((r) => r.vehicleAssigned?.vehicleId?.trim())
+    .filter((v): v is string => !!v && !/^Testing/i.test(v));
+
+  const [packs, triples, intellicarVehicles] = await Promise.all([
+    getPackInfoForVehicles(vehicleIds),
+    getDeviceTriples(),
+    getIntellicarVehicleSet(),
+  ]);
+
+  // 2. Resolve vehicleId → deviceId
+  const byPackId = new Map<string, string>();
+  const knownDeviceIds = new Set<string>();
+  for (const t of triples) {
+    if (t.packId) byPackId.set(t.packId, t.deviceId);
+    knownDeviceIds.add(t.deviceId);
+  }
+  const vehicleToDevice: Record<string, string> = {};
+  for (const [vid, pack] of Object.entries(packs)) {
+    if (pack.bmsId && knownDeviceIds.has(pack.bmsId)) vehicleToDevice[vid] = pack.bmsId;
+    else if (pack.batteryId && byPackId.has(pack.batteryId)) vehicleToDevice[vid] = byPackId.get(pack.batteryId)!;
+    else if (pack.batterySerial && byPackId.has(pack.batterySerial)) vehicleToDevice[vid] = byPackId.get(pack.batterySerial)!;
+  }
+  const deviceIds = [...new Set(Object.values(vehicleToDevice))];
+
+  // 3. Bulk Sensiot batch — all dates × all devices in one call.
+  const sensiotBatch: Record<string, Record<string, ReportData>> = deviceIds.length > 0
+    ? await getReportBatch(deviceIds, dates)
+    : {};
+
+  // 4. For vehicles only Intellicar covers, query per-day in parallel.
+  const intellicarVehiclesNeeded = vehicleIds.filter((vid) => !vehicleToDevice[vid] && intellicarVehicles.has(vid));
+  const intellicarResults = new Map<string, Map<string, number>>();
+  await Promise.all(
+    intellicarVehiclesNeeded.flatMap((vid) =>
+      dates.map(async (date) => {
+        const startMs = Date.parse(date + "T00:00:00+05:30");
+        const endMs = startMs + 86_400_000 - 1;
+        const res = await getIntellicarDistance(vid, startMs, endMs);
+        if (res && typeof res.distance === "number" && res.distance > 0) {
+          if (!intellicarResults.has(vid)) intellicarResults.set(vid, new Map());
+          intellicarResults.get(vid)!.set(date, res.distance);
+        }
+      })
+    )
+  );
+
+  // 5. Build per-rider per-date rows
+  const rows: ExportRow[] = [];
+  for (const r of riders) {
+    const vid = r.vehicleAssigned?.vehicleId?.trim() ?? "";
+    if (!vid || /^Testing/i.test(vid)) continue;
+    const pack = packs[vid];
+    const deviceId = vehicleToDevice[vid];
+    const baseline = {
+      riderId: String(r._id),
+      name: r.name?.trim() || "—",
+      phone: r.phone?.trim() || "",
+      blinkitRiderId: r.blinkitRiderId?.trim() || "",
+      appId: r.appId?.trim() || r.userName?.trim() || "",
+      city: r.city?.trim() || "",
+      zone: canonicalZone(r.zone),
+      vehicleNo: vid,
+      batteryId: pack?.batteryId || pack?.batterySerial || "",
+      bmsId: pack?.bmsId || "",
+      packModel: pack?.model || "",
+    };
+
+    for (const date of dates) {
+      // Prefer Sensiot
+      const rep = deviceId ? sensiotBatch[deviceId]?.[date] : undefined;
+      let distanceKm: number | null = null;
+      let energyKwh: number | null = null;
+      let cycleIncrement: number | null = null;
+      let source: ExportRow["source"] = "none";
+
+      if (rep) {
+        cycleIncrement = typeof rep.cycleIncrement === "number" ? Math.round(rep.cycleIncrement * 100) / 100 : null;
+        energyKwh = typeof rep.energyConsumed === "number" && rep.energyConsumed > 0
+          ? Math.round(rep.energyConsumed * 1000) / 1000
+          : null;
+        if (typeof rep.distanceTraveled === "number" && rep.distanceTraveled > 0) {
+          distanceKm = Math.round(rep.distanceTraveled * 10) / 10;
+          source = "sensiot";
+        } else {
+          // energy-derived fallback
+          const derived = distanceFromReport(rep);
+          if (derived != null && derived > 0) {
+            distanceKm = derived;
+            source = "sensiot-energy";
+          }
+        }
+      }
+      // Intellicar fallback
+      if (distanceKm == null) {
+        const icDay = intellicarResults.get(vid)?.get(date);
+        if (icDay != null && icDay > 0) {
+          distanceKm = Math.round(icDay * 10) / 10;
+          source = "intellicar";
+        }
+      }
+
+      rows.push({ ...baseline, date, distanceKm, energyKwh, cycleIncrement, source });
+    }
+  }
+
+  return NextResponse.json({
+    meta: {
+      dates,
+      ridersExported: riders.length,
+      rows: rows.length,
+      sources: {
+        sensiot: rows.filter((r) => r.source === "sensiot").length,
+        sensiotEnergy: rows.filter((r) => r.source === "sensiot-energy").length,
+        intellicar: rows.filter((r) => r.source === "intellicar").length,
+        none: rows.filter((r) => r.source === "none").length,
+        kmPerKwh: KM_PER_KWH,
+      },
+    },
+    rows,
+  });
+}
