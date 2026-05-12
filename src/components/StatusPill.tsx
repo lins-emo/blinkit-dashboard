@@ -1,4 +1,4 @@
-import type { LiveStatus } from "@/lib/intellicar";
+import type { LiveStatus } from "@/lib/data";
 
 const STYLES: Record<string, string> = {
   "on-trip": "bg-good/8 text-good border-good/25",

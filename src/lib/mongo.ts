@@ -91,6 +91,70 @@ export async function getRider(id: string): Promise<RiderDoc | null> {
   return d.collection<RiderDoc>("riders").findOne({ _id: new ObjectId(id) });
 }
 
+// ---------- Pack lookup (mydatabase.Vehicletracker) ----------
+
+export interface PackInfo {
+  vehicleId: string;
+  batteryId: string;
+  batterySerial: string;
+  bmsId: string;
+  packId: string;        // explicit Pack ID field (usually empty — falls back to batteryId)
+  model: string;
+  vendor: string;
+  status: string;        // "Active" / "Ready to Deploy" / "Under Maintenance"
+  batteryStatus: string;
+  chassisNo: string;
+  riderName: string;
+  location: string;
+  replacementHistory: Array<{ batteryId?: string; replacedAt?: string }>;
+}
+
+async function _getBlinkitPackInfo(vehicleIds: string[]): Promise<Record<string, PackInfo>> {
+  if (vehicleIds.length === 0) return {};
+  const c = await client();
+  const docs = await c
+    .db("mydatabase")
+    .collection("Vehicletracker")
+    .find({ "Vehicle ID": { $in: vehicleIds } })
+    .toArray();
+  const out: Record<string, PackInfo> = {};
+  for (const d of docs) {
+    const vid = d["Vehicle ID"];
+    if (!vid) continue;
+    const swapRaw = (d["Battery Replacement History"] as Array<{ "Battery ID"?: string; "Replaced At"?: string }> | undefined) ?? [];
+    const replacementHistory = swapRaw
+      .map((s) => ({ batteryId: s["Battery ID"] || undefined, replacedAt: s["Replaced At"] || undefined }))
+      .filter((s) => s.batteryId);
+    out[vid] = {
+      vehicleId: vid,
+      batteryId: (d["Battery ID"] || "").toString().trim(),
+      batterySerial: (d["Battery Serial No"] || "").toString().trim(),
+      bmsId: (d["BMS ID"] || "").toString().trim(),
+      packId: (d["Pack ID"] || "").toString().trim(),
+      model: (d["Model"] || "").toString().trim(),
+      vendor: (d["Vendor"] || "").toString().trim(),
+      status: (d["Status"] || "").toString().trim(),
+      batteryStatus: (d["Battery Status"] || "").toString().trim(),
+      chassisNo: (d["VIN No./Chasis No"] || d["VIN No"]?.["/Chasis No"] || "").toString().trim(),
+      riderName: (d["Rider Name"] || "").toString().trim(),
+      location: (d["Location"] || "").toString().trim(),
+      replacementHistory,
+    };
+  }
+  return out;
+}
+
+const cachedPackInfo = unstable_cache(
+  _getBlinkitPackInfo,
+  ["mongo:packInfo:v1"],
+  { revalidate: 300, tags: ["packs", "mongo"] }
+);
+
+export async function getPackInfoForVehicles(vehicleIds: string[]): Promise<Record<string, PackInfo>> {
+  // Sort to make cache key stable across reorderings.
+  return cachedPackInfo([...vehicleIds].sort());
+}
+
 // ---------- distance_floor: cross-lambda monotonic high-water marks ----------
 // We never display a distance lower than the highest value previously observed
 // for the same (vehicle, window) within a 1-hour TTL. Stored in Mongo so all

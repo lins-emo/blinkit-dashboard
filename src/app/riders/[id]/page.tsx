@@ -5,8 +5,7 @@ import Avatar from "@/components/Avatar";
 import Sparkline from "@/components/Sparkline";
 import { LiveStatusPill, VehicleStatusPill } from "@/components/StatusPill";
 import { getRiderRowById, getRiderDoc, getDailyDistanceSeries } from "@/lib/data";
-import { getGpsHistory } from "@/lib/intellicar";
-import { summarize } from "@/lib/behavior";
+import { getPackInfoForVehicles, type PackInfo } from "@/lib/mongo";
 
 export const dynamic = "force-dynamic";
 
@@ -34,15 +33,13 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
     );
   }
 
-  const v = doc.vehicleAssigned?.vehicleId?.trim();
-  const now = Date.now();
-  const dayAgo = now - 24 * 60 * 60 * 1000;
-  const canTrack = !!v && !/^Testing/i.test(v) && !row.notOnIntellicar;
-  const [points, daily] = await Promise.all([
-    canTrack ? getGpsHistory(v!, dayAgo, now) : Promise.resolve([]),
-    canTrack ? getDailyDistanceSeries(v!, 7) : Promise.resolve([]),
+  const vehicleNo = doc.vehicleAssigned?.vehicleId?.trim();
+  const [daily, packMap] = await Promise.all([
+    vehicleNo && !/^Testing/i.test(vehicleNo) ? getDailyDistanceSeries(vehicleNo, 7) : Promise.resolve([]),
+    vehicleNo ? getPackInfoForVehicles([vehicleNo]) : Promise.resolve({} as Record<string, PackInfo>),
   ]);
-  const summary = summarize(points);
+  const pack: PackInfo | null = vehicleNo ? (packMap[vehicleNo] ?? null) : null;
+  const dailyTotal = daily.reduce((s, d) => s + d.km, 0);
 
   return (
     <Shell>
@@ -84,82 +81,54 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
         </div>
       </div>
 
-
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
         <KpiCard label="Today" value={`${(row.distanceTodayKm ?? 0).toFixed(1)} km`} tone="accent" />
         <KpiCard label="Last 7 days" value={`${(row.distance7dKm ?? 0).toFixed(0)} km`} />
         <KpiCard label="Speed now" value={row.liveSpeed != null ? `${row.liveSpeed.toFixed(0)} km/h` : "—"} />
         <KpiCard label="Battery" value={row.liveBattery != null ? `${row.liveBattery.toFixed(0)}%` : "—"}
           tone={row.liveBattery != null && row.liveBattery < 20 ? "bad" : row.liveBattery != null && row.liveBattery < 40 ? "warn" : "default"} />
-        <KpiCard label="Odometer" value={row.odometer != null ? `${row.odometer.toFixed(0)} km` : "—"}
+        <KpiCard label="Cycles" value={row.cycleCount != null ? row.cycleCount.toFixed(1) : "—"}
           sub={`Last seen ${fmtTime(row.liveCommTime)}`} />
       </div>
 
-      {daily.length > 0 && (
+      {daily.length > 0 && dailyTotal > 0 && (
         <div className="rounded-card border border-line bg-surface p-4 mb-5">
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm font-medium text-ink">Distance · last 7 days</div>
-            <div className="text-xs text-ink-3 tabular-nums">total {daily.reduce((s, d) => s + d.km, 0).toFixed(1)} km</div>
+            <div className="text-xs text-ink-3 tabular-nums">total {dailyTotal.toFixed(1)} km</div>
           </div>
           <Sparkline data={daily} height={90} />
         </div>
       )}
 
-      <div className="rounded-card border border-line bg-surface overflow-hidden">
-        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-          <div className="text-sm font-medium text-ink">Behavior · last 24 hours</div>
-          <div className="text-xs text-ink-3 tabular-nums">{summary.tripCount} trips · {summary.totalDistanceKm.toFixed(1)} km</div>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 divide-x divide-y divide-line border-t border-line">
-          <Stat label="Distance" value={`${summary.totalDistanceKm.toFixed(1)} km`} />
-          <Stat label="Trips" value={String(summary.tripCount)} />
-          <Stat label="Active time" value={`${summary.activeMin.toFixed(0)} min`} />
-          <Stat label="Moving time" value={`${summary.movingMin.toFixed(0)} min`} />
-          <Stat label="Idle time" value={`${summary.idleMin.toFixed(0)} min`} warn={summary.idleMin > summary.movingMin && summary.movingMin > 0} />
-          <Stat label="Max speed" value={`${summary.maxSpeed.toFixed(0)} km/h`} warn={summary.maxSpeed > 60} />
-          <Stat label="Avg moving" value={`${summary.avgMovingSpeed.toFixed(0)} km/h`} />
-          <Stat label="Min battery" value={summary.minBattery != null ? `${summary.minBattery.toFixed(0)}%` : "—"} warn={summary.minBattery != null && summary.minBattery < 20} />
-          <Stat label="Harsh accel" value={String(summary.harshAccelCount)} warn={summary.harshAccelCount > 5} bad={summary.harshAccelCount > 15} />
-          <Stat label="Harsh brake" value={String(summary.harshBrakeCount)} warn={summary.harshBrakeCount > 5} bad={summary.harshBrakeCount > 15} />
-          <Stat label="Battery dips" value={String(summary.batteryDipCount)} warn={summary.batteryDipCount > 0} />
-          <Stat label="GPS points" value={String(points.length)} />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
-
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
         <div className="rounded-card border border-line bg-surface overflow-hidden">
           <div className="px-4 py-3 border-b border-line flex items-center justify-between">
-            <div className="text-sm font-medium text-ink">Trips · 24h</div>
-            <div className="text-xs text-ink-3">{summary.trips.length} {summary.trips.length === 1 ? "trip" : "trips"}</div>
+            <div className="text-sm font-medium text-ink">Pack</div>
+            {row.packStatus && (
+              <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium border ${row.packStatus === "Active" ? "bg-good/8 text-good border-good/25" : "bg-line text-ink-3 border-line-2"}`}>
+                {row.packStatus}
+              </span>
+            )}
           </div>
-          <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-bg/60 text-[11px] uppercase tracking-wider text-ink-3 sticky top-0">
-                <tr>
-                  <th className="text-left px-4 py-2 font-medium">Started</th>
-                  <th className="text-right px-3 py-2 font-medium">Distance</th>
-                  <th className="text-right px-3 py-2 font-medium">Duration</th>
-                  <th className="text-right px-3 py-2 font-medium">Idle</th>
-                  <th className="text-right px-4 py-2 font-medium">Max</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.trips.length === 0 && <tr><td colSpan={5} className="px-4 py-12 text-center text-ink-3">
-                  <div>No trips in the last 24 hours.</div>
-                </td></tr>}
-                {summary.trips.slice().reverse().map((t, i) => (
-                  <tr key={i} className="border-t border-line hover:bg-bg/60 transition">
-                    <td className="px-4 py-2 text-ink-2">{new Date(t.startTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })}</td>
-                    <td className="px-3 py-2 text-right tabular-nums font-medium">{t.distanceKm.toFixed(1)} km</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-ink-2">{t.durationMin.toFixed(0)} min</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-ink-3">{t.idleMin.toFixed(0)} min</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-ink-2">{t.maxSpeed.toFixed(0)} km/h</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <dl className="text-sm">
+            <Row label="Battery ID"        value={row.batteryId || "—"} mono />
+            <Row label="BMS ID"            value={row.bmsId || "—"}     mono />
+            <Row label="Model"             value={row.packModel || "—"} />
+            <Row label="Vendor"            value={row.packVendor || "—"} />
+            <Row label="Pack voltage"      value={row.packVoltage != null ? `${row.packVoltage.toFixed(1)} V` : "—"} />
+            <Row label="Pack current"      value={row.packCurrent != null ? `${row.packCurrent.toFixed(1)} A` : "—"} />
+            <Row label="Remaining"         value={row.packRemainingCapacity != null ? `${row.packRemainingCapacity.toFixed(1)} Ah` : "—"} />
+            <Row label="Energy today"      value={row.energyTodayKwh != null ? `${row.energyTodayKwh.toFixed(2)} kWh` : "—"} />
+            <Row label="Cell spread"       value={row.cellSpreadMv != null ? `${row.cellSpreadMv} mV` : "—"}
+              warn={row.cellSpreadMv != null && row.cellSpreadMv > 100}
+              bad={row.cellSpreadMv != null && row.cellSpreadMv > 200} />
+            <Row label="Pack temperature"  value={row.maxTempC != null ? `${row.minTempC?.toFixed(0)}–${row.maxTempC.toFixed(0)} °C` : "—"}
+              warn={row.maxTempC != null && row.maxTempC > 50}
+              bad={row.maxTempC != null && row.maxTempC > 60} />
+            <Row label="Active faults"     value={String(row.faultsActive)}
+              warn={row.faultsActive > 0} />
+          </dl>
         </div>
 
         <div className="rounded-card border border-line bg-surface overflow-hidden">
@@ -198,8 +167,33 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
         </div>
       </div>
 
+      {pack && pack.replacementHistory.length > 0 && (
+        <div className="rounded-card border border-line bg-surface overflow-hidden mb-5">
+          <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+            <div className="text-sm font-medium text-ink">Pack swap history</div>
+            <div className="text-xs text-ink-3">{pack.replacementHistory.length} swap{pack.replacementHistory.length === 1 ? "" : "s"}</div>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-bg/60 text-[11px] uppercase tracking-wider text-ink-3">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium">Battery</th>
+                <th className="text-left px-3 py-2 font-medium">Replaced at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pack.replacementHistory.map((s, i) => (
+                <tr key={i} className="border-t border-line">
+                  <td className="px-4 py-2 font-mono text-xs text-ink-2">{s.batteryId || "—"}</td>
+                  <td className="px-3 py-2 text-ink-3">{s.replacedAt || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {(doc.kyc?.aadharUrl || doc.kyc?.licenseUrl || doc.kyc?.pancardUrl || doc.kyc?.selfieUrl) && (
-        <div className="mt-5 rounded-card border border-line bg-surface overflow-hidden">
+        <div className="rounded-card border border-line bg-surface overflow-hidden">
           <div className="px-4 py-3 border-b border-line"><div className="text-sm font-medium text-ink">KYC documents</div></div>
           <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3">
             {doc.kyc?.selfieUrl && <KycLink label="Selfie" url={doc.kyc.selfieUrl} />}
@@ -213,20 +207,11 @@ export default async function RiderDetailPage({ params }: { params: Promise<{ id
   );
 }
 
-function Row({ label, value, warn, bad }: { label: string; value: string; warn?: boolean; bad?: boolean }) {
+function Row({ label, value, warn, bad, mono }: { label: string; value: string; warn?: boolean; bad?: boolean; mono?: boolean }) {
   return (
     <div className="flex items-center justify-between px-4 py-2 border-b border-line last:border-0">
       <dt className="text-ink-2 text-[13px]">{label}</dt>
-      <dd className={`tabular-nums font-medium ${bad ? "text-bad" : warn ? "text-warn" : "text-ink"}`}>{value}</dd>
-    </div>
-  );
-}
-
-function Stat({ label, value, warn, bad }: { label: string; value: string; warn?: boolean; bad?: boolean }) {
-  return (
-    <div className="px-4 py-3">
-      <div className="text-[10px] uppercase tracking-wider text-ink-3 font-medium">{label}</div>
-      <div className={`mt-0.5 text-base font-semibold tabular-nums ${bad ? "text-bad" : warn ? "text-warn" : "text-ink"}`}>{value}</div>
+      <dd className={`tabular-nums font-medium ${mono ? "font-mono text-xs" : ""} ${bad ? "text-bad" : warn ? "text-warn" : "text-ink"}`}>{value}</dd>
     </div>
   );
 }

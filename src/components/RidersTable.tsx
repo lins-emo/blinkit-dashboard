@@ -131,11 +131,12 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
               <SortHeader label="Rider" k="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
               <th className="text-left px-3 py-2.5 font-medium text-ink-3">Blinkit ID</th>
               <th className="text-left px-3 py-2.5 font-medium text-ink-3">Vehicle</th>
+              <th className="text-left px-3 py-2.5 font-medium text-ink-3">Battery</th>
               <SortHeader label="Zone" k="zone" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
               <SortHeader label="Today" k="distanceTodayKm" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
               <SortHeader label="7 days" k="distance7dKm" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
               <SortHeader label="Speed" k="liveSpeed" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-              <SortHeader label="Battery" k="liveBattery" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+              <SortHeader label="SOC" k="liveBattery" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
               <th className="text-left px-3 py-2.5 font-medium text-ink-3">Live</th>
               <th className="text-left px-3 py-2.5 font-medium text-ink-3">Vehicle</th>
               <SortHeader label="Last seen" k="liveCommTime" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
@@ -154,7 +155,11 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
                   </Link>
                 </td>
                 <td className="px-3 py-2.5 font-mono text-xs text-ink-2 whitespace-nowrap">{r.blinkitRiderId || r.appId || "—"}</td>
-                <td className="px-3 py-2.5 font-mono text-xs text-ink-2">{r.vehicleNo ?? "—"}</td>
+                <td className="px-3 py-2.5">
+                  <div className="font-mono text-xs text-ink-2">{r.vehicleNo ?? "—"}</div>
+                  {r.packModel && <div className="text-[11px] text-ink-3">{r.packModel}</div>}
+                </td>
+                <td className="px-3 py-2.5 font-mono text-xs text-ink-2">{r.batteryId || "—"}</td>
                 <td className="px-3 py-2.5">
                   <div className="text-ink-2">{r.zone}</div>
                   <div className="text-xs text-ink-3">{r.city}</div>
@@ -171,7 +176,7 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
               </tr>
             ))}
             {filtered.length === 0 && (
-              <tr><td colSpan={11} className="px-4 py-12 text-center text-ink-3 text-sm">
+              <tr><td colSpan={12} className="px-4 py-12 text-center text-ink-3 text-sm">
                 <div className="font-medium">No riders match.</div>
                 <div className="text-xs mt-1">Try clearing the filter or search.</div>
               </td></tr>
