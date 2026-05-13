@@ -70,6 +70,15 @@ function startOfTodayMs(): number {
   const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime();
 }
 
+// Reject obvious bad values in the BMS ID column ("BMS ID" placeholder, "0", "-", "invalid", etc.)
+function isValidBmsId(v: string | undefined): v is string {
+  if (!v) return false;
+  const t = v.trim();
+  if (t.length < 5) return false;
+  if (/^(BMS ?ID|invalid|none|n\/a|-|0+)$/i.test(t)) return false;
+  return true;
+}
+
 // Deterministic placeholder distances for vehicles with no data anywhere.
 function syntheticDistances(seed: string): { today: number; sevenDay: number } {
   let h = 2166136261;
@@ -245,16 +254,20 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
     getIntellicarVehicleSet(),
   ]);
 
-  // Build vehicleId → deviceId resolution using both the triples and pack info
+  // Build vehicleId → deviceId resolution.
+  // PRIMARY: trust pack.bmsId directly as the Sensiot deviceId — the report endpoint
+  // accepts any well-formed BMS serial regardless of whether the pack was active
+  // recently. (The /batteries response only lists devices active on a given date,
+  // so gating on it dropped ~24 perfectly valid packs.)
+  // FALLBACK: when bmsId is empty or obviously invalid, look up the packId in the
+  // /batteries triples to find a deviceId mapping.
   const byPackId = new Map<string, string>();
-  const knownDeviceIds = new Set<string>();
   for (const t of triples) {
     if (t.packId) byPackId.set(t.packId, t.deviceId);
-    knownDeviceIds.add(t.deviceId);
   }
   const vehicleToDevice: Record<string, string> = {};
   for (const [vid, pack] of Object.entries(packs)) {
-    if (pack.bmsId && knownDeviceIds.has(pack.bmsId)) vehicleToDevice[vid] = pack.bmsId;
+    if (isValidBmsId(pack.bmsId)) vehicleToDevice[vid] = pack.bmsId;
     else if (pack.batteryId && byPackId.has(pack.batteryId)) vehicleToDevice[vid] = byPackId.get(pack.batteryId)!;
     else if (pack.batterySerial && byPackId.has(pack.batterySerial)) vehicleToDevice[vid] = byPackId.get(pack.batterySerial)!;
   }

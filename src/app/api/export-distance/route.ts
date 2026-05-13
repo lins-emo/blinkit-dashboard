@@ -64,16 +64,24 @@ export async function POST(req: Request) {
     getIntellicarVehicleSet(),
   ]);
 
-  // 2. Resolve vehicleId → deviceId
+  // 2. Resolve vehicleId → deviceId.
+  // PRIMARY: trust pack.bmsId directly as Sensiot deviceId (reports endpoint accepts
+  // any valid BMS serial regardless of recent activity).
+  // FALLBACK: when bmsId is empty or obviously bad, look up packId → deviceId via /batteries.
   const byPackId = new Map<string, string>();
-  const knownDeviceIds = new Set<string>();
   for (const t of triples) {
     if (t.packId) byPackId.set(t.packId, t.deviceId);
-    knownDeviceIds.add(t.deviceId);
   }
+  const isValidBms = (v: string | undefined): v is string => {
+    if (!v) return false;
+    const t = v.trim();
+    if (t.length < 5) return false;
+    if (/^(BMS ?ID|invalid|none|n\/a|-|0+)$/i.test(t)) return false;
+    return true;
+  };
   const vehicleToDevice: Record<string, string> = {};
   for (const [vid, pack] of Object.entries(packs)) {
-    if (pack.bmsId && knownDeviceIds.has(pack.bmsId)) vehicleToDevice[vid] = pack.bmsId;
+    if (isValidBms(pack.bmsId)) vehicleToDevice[vid] = pack.bmsId;
     else if (pack.batteryId && byPackId.has(pack.batteryId)) vehicleToDevice[vid] = byPackId.get(pack.batteryId)!;
     else if (pack.batterySerial && byPackId.has(pack.batterySerial)) vehicleToDevice[vid] = byPackId.get(pack.batterySerial)!;
   }
