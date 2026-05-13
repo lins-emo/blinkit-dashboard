@@ -102,10 +102,13 @@ export async function POST(req: Request) {
     deviceIds.length > 0 ? getPackEfficiencies(deviceIds) : Promise.resolve(new Map<string, number>()),
   ]);
 
-  // 4. For vehicles only Intellicar covers, query per-day in parallel.
+  // 4. For vehicles only Intellicar covers, query per-day in parallel — but
+  //    bound by a time budget so a stale Intellicar cache can never blow the
+  //    function past its maxDuration. Whatever's not back in 20 s is dropped
+  //    (those rows fall through to source="none" instead of stalling).
   const intellicarVehiclesNeeded = vehicleIds.filter((vid) => !vehicleToDevice[vid] && intellicarVehicles.has(vid));
   const intellicarResults = new Map<string, Map<string, number>>();
-  await Promise.all(
+  const intellicarWork = Promise.all(
     intellicarVehiclesNeeded.flatMap((vid) =>
       dates.map(async (date) => {
         const startMs = Date.parse(date + "T00:00:00+05:30");
@@ -118,6 +121,8 @@ export async function POST(req: Request) {
       })
     )
   );
+  const intellicarDeadline = new Promise<void>((r) => setTimeout(r, 20_000));
+  await Promise.race([intellicarWork, intellicarDeadline]);
 
   // 5. Build per-rider per-date rows
   const rows: ExportRow[] = [];
