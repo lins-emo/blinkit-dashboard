@@ -6,6 +6,7 @@ import { ridersToCsv, downloadCsv } from "@/lib/csv";
 import { LiveStatusPill, VehicleStatusPill } from "./StatusPill";
 import Avatar from "./Avatar";
 import DownloadButton from "./DownloadButton";
+import RelativeTime from "./RelativeTime";
 
 type SortKey = "name" | "zone" | "distanceTodayKm" | "distance7dKm" | "liveSpeed" | "liveBattery" | "liveCommTime";
 type SortDir = "asc" | "desc";
@@ -13,15 +14,6 @@ type SortDir = "asc" | "desc";
 function fmt(n: number | null | undefined, d = 1, suffix = "") {
   if (n == null) return "—";
   return n.toFixed(d) + suffix;
-}
-
-function fmtAge(t: number | null | undefined) {
-  if (!t) return "—";
-  const sec = Math.floor((Date.now() - t) / 1000);
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
-  return `${Math.floor(sec / 86400)}d`;
 }
 
 function batteryClass(v: number | null) {
@@ -165,7 +157,7 @@ export default function RidersTable({ rows, downloadName = "blinkit-riders" }: {
                 </td>
                 <td className="px-3 py-2.5"><LiveStatusPill status={r.liveStatus} /></td>
                 <td className="px-3 py-2.5"><VehicleStatusPill status={r.vehicleStatusFlag} /></td>
-                <td className="px-4 py-2.5 text-right text-xs text-ink-3 tabular-nums">{fmtAge(r.liveCommTime)}</td>
+                <td className="px-4 py-2.5 text-right text-xs text-ink-3 tabular-nums"><RelativeTime t={r.liveCommTime} /></td>
               </tr>
             ))}
             {filtered.length === 0 && (
