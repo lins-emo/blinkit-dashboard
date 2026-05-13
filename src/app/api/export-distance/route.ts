@@ -96,11 +96,36 @@ export async function POST(req: Request) {
   }
   const deviceIds = [...new Set(Object.values(vehicleToDevice))];
 
-  // 3. Bulk Sensiot batch + per-pack efficiencies in parallel.
-  const [sensiotBatch, packEfficiencies] = await Promise.all([
-    deviceIds.length > 0 ? getReportBatch(deviceIds, dates) : Promise.resolve({} as Record<string, Record<string, ReportData>>),
-    deviceIds.length > 0 ? getPackEfficiencies(deviceIds) : Promise.resolve(new Map<string, number>()),
-  ]);
+  // 3. Sensiot batch — chunk the date range into ≤7-day windows fired in parallel.
+  //    A single batch call for 30 × 67 = 2010 pack-days routinely exceeds Vercel's
+  //    60 s function budget on cold cache. Four 7-day chunks in parallel finish in
+  //    the time of the slowest chunk (~10 s instead of ~50 s sequential).
+  //    Per-pack efficiencies are skipped in export to avoid an extra 14-day Sensiot
+  //    fetch on top — fleet constant (45 km/kWh) is used for energy-derived rows.
+  function chunk<T>(arr: T[], n: number): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+    return out;
+  }
+  const dateChunks = chunk(dates, 7);
+  const sensiotBatch: Record<string, Record<string, ReportData>> = {};
+  if (deviceIds.length > 0) {
+    const chunkResults = await Promise.all(
+      dateChunks.map((dc) => getReportBatch(deviceIds, dc))
+    );
+    for (const res of chunkResults) {
+      for (const [devId, byDate] of Object.entries(res)) {
+        if (!sensiotBatch[devId]) sensiotBatch[devId] = {};
+        Object.assign(sensiotBatch[devId], byDate);
+      }
+    }
+  }
+  // Per-pack efficiencies — best-effort. Skip for windows > 14 days to keep
+  // the function budget intact; fleet constant absorbs the small accuracy loss.
+  const packEfficiencies =
+    deviceIds.length > 0 && dates.length <= 14
+      ? await getPackEfficiencies(deviceIds)
+      : new Map<string, number>();
 
   // 4. For vehicles only Intellicar covers, query per-day in parallel — but
   //    bound by a time budget so a stale Intellicar cache can never blow the
