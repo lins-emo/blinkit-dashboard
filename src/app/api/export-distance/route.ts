@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { listBlinkitRiders, getPackInfoForVehicles } from "@/lib/mongo";
-import { getDeviceTriples, getReportBatch, distanceFromReport, KM_PER_KWH, type ReportData } from "@/lib/sensiot";
+import { getDeviceTriples, getReportBatch, getPackEfficiencies, distanceFromReport, type ReportData, type DistanceSource } from "@/lib/sensiot";
 import { getIntellicarVehicleSet, getIntellicarDistance } from "@/lib/intellicar";
 import { canonicalZone } from "@/config/zones";
 import { session } from "@/lib/auth";
@@ -17,13 +17,11 @@ interface ExportRow {
   zone: string;
   vehicleNo: string;
   batteryId: string;
-  bmsId: string;
   packModel: string;
   date: string;          // YYYY-MM-DD (IST)
   distanceKm: number | null;
   energyKwh: number | null;
-  cycleIncrement: number | null;
-  source: "sensiot" | "sensiot-energy" | "intellicar" | "none";
+  source: DistanceSource;
 }
 
 // Build a list of YYYY-MM-DD strings from inclusive `from` to inclusive `to`.
@@ -87,10 +85,11 @@ export async function POST(req: Request) {
   }
   const deviceIds = [...new Set(Object.values(vehicleToDevice))];
 
-  // 3. Bulk Sensiot batch — all dates × all devices in one call.
-  const sensiotBatch: Record<string, Record<string, ReportData>> = deviceIds.length > 0
-    ? await getReportBatch(deviceIds, dates)
-    : {};
+  // 3. Bulk Sensiot batch + per-pack efficiencies in parallel.
+  const [sensiotBatch, packEfficiencies] = await Promise.all([
+    deviceIds.length > 0 ? getReportBatch(deviceIds, dates) : Promise.resolve({} as Record<string, Record<string, ReportData>>),
+    deviceIds.length > 0 ? getPackEfficiencies(deviceIds) : Promise.resolve(new Map<string, number>()),
+  ]);
 
   // 4. For vehicles only Intellicar covers, query per-day in parallel.
   const intellicarVehiclesNeeded = vehicleIds.filter((vid) => !vehicleToDevice[vid] && intellicarVehicles.has(vid));
@@ -126,36 +125,21 @@ export async function POST(req: Request) {
       zone: canonicalZone(r.zone),
       vehicleNo: vid,
       batteryId: pack?.batteryId || pack?.batterySerial || "",
-      bmsId: pack?.bmsId || "",
       packModel: pack?.model || "",
     };
+    const perPackKmPerKwh = deviceId ? packEfficiencies.get(deviceId) : undefined;
 
     for (const date of dates) {
-      // Prefer Sensiot
       const rep = deviceId ? sensiotBatch[deviceId]?.[date] : undefined;
-      let distanceKm: number | null = null;
-      let energyKwh: number | null = null;
-      let cycleIncrement: number | null = null;
-      let source: ExportRow["source"] = "none";
+      let energyKwh: number | null = rep && typeof rep.energyConsumed === "number" && rep.energyConsumed > 0
+        ? Math.round(rep.energyConsumed * 1000) / 1000
+        : null;
 
-      if (rep) {
-        cycleIncrement = typeof rep.cycleIncrement === "number" ? Math.round(rep.cycleIncrement * 100) / 100 : null;
-        energyKwh = typeof rep.energyConsumed === "number" && rep.energyConsumed > 0
-          ? Math.round(rep.energyConsumed * 1000) / 1000
-          : null;
-        if (typeof rep.distanceTraveled === "number" && rep.distanceTraveled > 0) {
-          distanceKm = Math.round(rep.distanceTraveled * 10) / 10;
-          source = "sensiot";
-        } else {
-          // energy-derived fallback
-          const derived = distanceFromReport(rep);
-          if (derived != null && derived > 0) {
-            distanceKm = derived;
-            source = "sensiot-energy";
-          }
-        }
-      }
-      // Intellicar fallback
+      const sensiotResult = distanceFromReport(rep, perPackKmPerKwh);
+      let distanceKm = sensiotResult.km;
+      let source: DistanceSource = sensiotResult.source;
+
+      // Intellicar fallback only when Sensiot returned no data at all
       if (distanceKm == null) {
         const icDay = intellicarResults.get(vid)?.get(date);
         if (icDay != null && icDay > 0) {
@@ -164,7 +148,7 @@ export async function POST(req: Request) {
         }
       }
 
-      rows.push({ ...baseline, date, distanceKm, energyKwh, cycleIncrement, source });
+      rows.push({ ...baseline, date, distanceKm, energyKwh, source });
     }
   }
 
@@ -174,11 +158,12 @@ export async function POST(req: Request) {
       ridersExported: riders.length,
       rows: rows.length,
       sources: {
-        sensiot: rows.filter((r) => r.source === "sensiot").length,
-        sensiotEnergy: rows.filter((r) => r.source === "sensiot-energy").length,
+        sensiotGps: rows.filter((r) => r.source === "sensiot-gps").length,
+        sensiotGpsSuspicious: rows.filter((r) => r.source === "sensiot-gps-suspicious").length,
+        sensiotEnergyPack: rows.filter((r) => r.source === "sensiot-energy-pack").length,
+        sensiotEnergyFleet: rows.filter((r) => r.source === "sensiot-energy-fleet").length,
         intellicar: rows.filter((r) => r.source === "intellicar").length,
         none: rows.filter((r) => r.source === "none").length,
-        kmPerKwh: KM_PER_KWH,
       },
     },
     rows,

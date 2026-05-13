@@ -146,17 +146,106 @@ export async function getReportBatch(
 
 // ---------- Distance derivation ----------
 
-/** Pack efficiency in km/kWh — used when distance is reported as 0 but energy was consumed. */
-export const KM_PER_KWH = 50;
+/** Fleet-wide km/kWh constant. Tuned from 50 → 45 based on empirical median across
+ *  1631 GREEN pack-days in the 14-day BNC audit. */
+export const KM_PER_KWH_FLEET = 45;
 
-export function distanceFromReport(rep: ReportData | undefined | null): number | null {
-  if (!rep) return null;
-  if (typeof rep.distanceTraveled === "number" && rep.distanceTraveled > 0) {
-    return Math.round(rep.distanceTraveled * 10) / 10;
+/** Cross-validation bounds on the implied km/kWh ratio. Outside this range, the
+ *  GPS measurement is almost certainly wrong (multi-path, lost fix, etc.). */
+export const RATIO_BOUNDS = { min: 5, max: 150 } as const;
+
+export type DistanceSource =
+  | "sensiot-gps"               // real GPS haversine, ratio passes sanity
+  | "sensiot-gps-suspicious"    // real GPS km but implied km/kWh out of bounds
+  | "sensiot-energy-pack"       // derived from energy × per-pack median
+  | "sensiot-energy-fleet"      // derived from energy × fleet constant (45)
+  | "intellicar"                // fallback from Intellicar
+  | "synthetic"                 // deterministic placeholder (UI only)
+  | "none";                     // no data anywhere
+
+export interface DistanceWithSource {
+  km: number | null;
+  source: DistanceSource;
+}
+
+/** Resolve a single pack-day report into a displayable km value + source flag.
+ *  Pass `perPackKmPerKwh` if the pack has a stable per-pack efficiency available. */
+export function distanceFromReport(
+  rep: ReportData | undefined | null,
+  perPackKmPerKwh?: number
+): DistanceWithSource {
+  if (!rep) return { km: null, source: "none" };
+  const km = typeof rep.distanceTraveled === "number" ? rep.distanceTraveled : 0;
+  const e  = typeof rep.energyConsumed  === "number" ? rep.energyConsumed  : 0;
+
+  if (km > 0 && e > 0) {
+    const ratio = km / e;
+    const ok = ratio >= RATIO_BOUNDS.min && ratio <= RATIO_BOUNDS.max;
+    return {
+      km: Math.round(km * 10) / 10,
+      source: ok ? "sensiot-gps" : "sensiot-gps-suspicious",
+    };
   }
-  // Fallback: derive from energy consumed.
-  if (typeof rep.energyConsumed === "number" && rep.energyConsumed > 0) {
-    return Math.round(rep.energyConsumed * KM_PER_KWH * 10) / 10;
+  if (km > 0) {
+    return { km: Math.round(km * 10) / 10, source: "sensiot-gps" };
   }
-  return null;
+  if (e > 0) {
+    if (perPackKmPerKwh && perPackKmPerKwh > 0) {
+      return {
+        km: Math.round(e * perPackKmPerKwh * 10) / 10,
+        source: "sensiot-energy-pack",
+      };
+    }
+    return {
+      km: Math.round(e * KM_PER_KWH_FLEET * 10) / 10,
+      source: "sensiot-energy-fleet",
+    };
+  }
+  return { km: null, source: "none" };
+}
+
+// ---------- Per-pack efficiency (km/kWh) — cached 24 h ----------
+
+const PACK_EFF_WINDOW_DAYS = 14;
+const PACK_EFF_MIN_SAMPLES = 10;
+
+async function _computePackEfficiencies(deviceIds: string[]): Promise<Record<string, number>> {
+  if (deviceIds.length === 0) return {};
+  const dates = Array.from({ length: PACK_EFF_WINDOW_DAYS }, (_, i) =>
+    istDate(PACK_EFF_WINDOW_DAYS - 1 - i)
+  );
+  const reports = await getReportBatch(deviceIds, dates);
+  const out: Record<string, number> = {};
+  for (const [devId, byDate] of Object.entries(reports)) {
+    const ratios: number[] = [];
+    for (const rep of Object.values(byDate)) {
+      const km = Number(rep.distanceTraveled || 0);
+      const e  = Number(rep.energyConsumed  || 0);
+      if (km > 0.5 && e > 0.1) {
+        const r = km / e;
+        if (r >= RATIO_BOUNDS.min && r <= RATIO_BOUNDS.max) ratios.push(r);
+      }
+    }
+    if (ratios.length >= PACK_EFF_MIN_SAMPLES) {
+      ratios.sort((a, b) => a - b);
+      out[devId] = ratios[Math.floor(ratios.length / 2)];
+    }
+  }
+  return out;
+}
+
+const cachedPackEfficiencies = unstable_cache(
+  _computePackEfficiencies,
+  ["sensiot:packEfficiencies:v1"],
+  { revalidate: 86400, tags: ["sensiot", "efficiency"] }
+);
+
+export async function getPackEfficiencies(deviceIds: string[]): Promise<Map<string, number>> {
+  try {
+    // Sort for cache-key stability
+    const obj = await cachedPackEfficiencies([...new Set(deviceIds)].sort());
+    return new Map(Object.entries(obj));
+  } catch {
+    return new Map();
+  }
 }

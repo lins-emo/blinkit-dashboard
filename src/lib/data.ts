@@ -1,6 +1,6 @@
 import { unstable_cache } from "next/cache";
 import { listBlinkitRiders, getRider, getPackInfoForVehicles, readFloors, writeFloors, type RiderDoc, type PackInfo } from "./mongo";
-import { getDeviceTriples, getLiveAll, getReportBatch, distanceFromReport, istDate, last7DaysIST, type LiveDevice } from "./sensiot";
+import { getDeviceTriples, getLiveAll, getReportBatch, distanceFromReport, getPackEfficiencies, istDate, last7DaysIST, type LiveDevice, type DistanceSource } from "./sensiot";
 import { getIntellicarVehicleSet, getIntellicarDistance } from "./intellicar";
 import { canonicalZone } from "@/config/zones";
 
@@ -59,7 +59,8 @@ export interface RiderRow {
   distanceTodayKm: number | null;
   distance7dKm: number | null;
   distanceIsSynthetic: boolean;
-  distanceFromEnergy: boolean;      // true if derived from kWh × 50 km/kWh fallback
+  distanceFromEnergy: boolean;
+  distanceSource: DistanceSource;
   energyTodayKwh: number | null;
   odometer: number | null;          // not provided by Sensiot — null
   // Internal — never surfaced to UI
@@ -139,11 +140,11 @@ interface ShapeInputs {
   live: LiveDevice | null;
   distToday: number | null;
   dist7d: number | null;
-  todayFromEnergy: boolean;
+  todaySource: DistanceSource;
   notOnSensiot: boolean;
 }
 
-function shape({ rider, pack, live, distToday, dist7d, todayFromEnergy, notOnSensiot }: ShapeInputs): RiderRow {
+function shape({ rider, pack, live, distToday, dist7d, todaySource, notOnSensiot }: ShapeInputs): RiderRow {
   const vehicleNo = rider.vehicleAssigned?.vehicleId?.trim() || null;
   const vs = rider.vehicleStatus;
   const vehicleStatusFlag: RiderRow["vehicleStatusFlag"] =
@@ -153,12 +154,14 @@ function shape({ rider, pack, live, distToday, dist7d, todayFromEnergy, notOnSen
   let distanceIsSynthetic = false;
   let synthDistToday = distToday;
   let synthDist7d = dist7d;
+  let effectiveSource: DistanceSource = todaySource;
   if (synthDistToday == null && synthDist7d == null) {
     const seed = String(rider._id) + (vehicleNo ?? "");
     const synth = syntheticDistances(seed);
     synthDistToday = synth.today;
     synthDist7d = synth.sevenDay;
     distanceIsSynthetic = true;
+    effectiveSource = "synthetic";
   }
 
   return {
@@ -204,7 +207,8 @@ function shape({ rider, pack, live, distToday, dist7d, todayFromEnergy, notOnSen
     distanceTodayKm: synthDistToday,
     distance7dKm: synthDist7d,
     distanceIsSynthetic,
-    distanceFromEnergy: todayFromEnergy,
+    distanceFromEnergy: effectiveSource === "sensiot-energy-pack" || effectiveSource === "sensiot-energy-fleet",
+    distanceSource: effectiveSource,
     energyTodayKwh: live?.packMetrics?.energyKwh ?? null,
     odometer: null,
     notOnSensiot,
@@ -275,8 +279,12 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
   const deviceIds = [...new Set(Object.values(vehicleToDevice))];
 
   // Pull today + last 7 days distance in ONE batch call.
+  // In parallel, fetch per-pack efficiencies (14-day median km/kWh per device, 24h cached).
   const dates = last7DaysIST();
-  const reportBatch = deviceIds.length > 0 ? await getReportBatch(deviceIds, dates) : {};
+  const [reportBatch, packEfficiencies] = await Promise.all([
+    deviceIds.length > 0 ? getReportBatch(deviceIds, dates) : Promise.resolve({} as Record<string, Record<string, import("./sensiot").ReportData>>),
+    deviceIds.length > 0 ? getPackEfficiencies(deviceIds) : Promise.resolve(new Map<string, number>()),
+  ]);
 
   const today = istDate(0);
   const sevenDays = dates;
@@ -312,7 +320,7 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
   const rows = riders.map((r) => {
     const vid = r.vehicleAssigned?.vehicleId?.trim();
     if (!vid || /^Testing/i.test(vid)) {
-      return shape({ rider: r, pack: null, live: null, distToday: null, dist7d: null, todayFromEnergy: false, notOnSensiot: false });
+      return shape({ rider: r, pack: null, live: null, distToday: null, dist7d: null, todaySource: "none", notOnSensiot: false });
     }
     const pack = packs[vid] ?? null;
     const deviceId = vehicleToDevice[vid];
@@ -320,7 +328,6 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
       // Sensiot doesn't cover this vehicle — try Intellicar fallback.
       const ic = intellicarByVehicle.get(vid);
       if (ic && (ic.today != null || ic.seven != null)) {
-        // Apply monotonic floor before returning.
         const tKey = todayKey(vid);
         const sKey = sevenDayKey(vid, hourBucket);
         const tFloor = floors.get(tKey);
@@ -335,27 +342,26 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
           if (sFloor != null && sFloor > icSeven) icSeven = sFloor;
           if (icSeven > (sFloor ?? -1)) floorUpdates.push({ key: sKey, value: icSeven });
         } else if (sFloor != null) icSeven = sFloor;
-        return shape({ rider: r, pack, live: null, distToday: icToday, dist7d: icSeven, todayFromEnergy: false, notOnSensiot: true });
+        return shape({ rider: r, pack, live: null, distToday: icToday, dist7d: icSeven, todaySource: "intellicar", notOnSensiot: true });
       }
-      return shape({ rider: r, pack, live: null, distToday: null, dist7d: null, todayFromEnergy: false, notOnSensiot: true });
+      return shape({ rider: r, pack, live: null, distToday: null, dist7d: null, todaySource: "none", notOnSensiot: true });
     }
     const live = liveAll[deviceId] ?? null;
     const reportsForDevice = reportBatch[deviceId] ?? {};
+    const perPackKmPerKwh = packEfficiencies.get(deviceId);
 
-    // Today distance (with energy fallback)
+    // Today distance — primary GPS, fallback to per-pack energy ratio, then fleet ratio.
     const todayReport = reportsForDevice[today];
-    let todayDistance = distanceFromReport(todayReport);
-    const todayFromEnergy =
-      !!todayReport &&
-      (!todayReport.distanceTraveled || todayReport.distanceTraveled <= 0) &&
-      todayDistance !== null;
+    const todayResult = distanceFromReport(todayReport, perPackKmPerKwh);
+    let todayDistance: number | null = todayResult.km;
+    const todaySource: DistanceSource = todayResult.source;
 
-    // 7-day distance: sum over the 7 days, with energy fallback for any zero-distance day
+    // 7-day distance: sum each day's resolved distance.
     let sevenDistance: number | null = null;
     for (const date of sevenDays) {
       const rep = reportsForDevice[date];
-      const d = distanceFromReport(rep);
-      if (d != null) sevenDistance = (sevenDistance ?? 0) + d;
+      const d = distanceFromReport(rep, perPackKmPerKwh);
+      if (d.km != null) sevenDistance = (sevenDistance ?? 0) + d.km;
     }
     if (sevenDistance != null) sevenDistance = Math.round(sevenDistance * 10) / 10;
 
@@ -383,7 +389,7 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
       live,
       distToday: todayDistance,
       dist7d: sevenDistance,
-      todayFromEnergy,
+      todaySource,
       notOnSensiot: false,
     });
   });
@@ -435,10 +441,14 @@ export async function getDailyDistanceSeries(vehicleId: string, days = 7): Promi
   if (!deviceId) return [];
 
   const dates: string[] = Array.from({ length: days }, (_, i) => istDate(days - 1 - i));
-  const reports = await getReportBatch([deviceId], dates);
+  const [reports, efficiencies] = await Promise.all([
+    getReportBatch([deviceId], dates),
+    getPackEfficiencies([deviceId]),
+  ]);
   const byDate = reports[deviceId] ?? {};
+  const perPack = efficiencies.get(deviceId);
   return dates.map((d) => {
-    const km = distanceFromReport(byDate[d]) ?? 0;
+    const km = distanceFromReport(byDate[d], perPack).km ?? 0;
     const dayLabel = new Date(d + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short" });
     return { day: dayLabel, km };
   });

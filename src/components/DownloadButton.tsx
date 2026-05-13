@@ -12,13 +12,10 @@ interface ExportRow {
   zone: string;
   vehicleNo: string;
   batteryId: string;
-  bmsId: string;
   packModel: string;
   date: string;
   distanceKm: number | null;
   energyKwh: number | null;
-  cycleIncrement: number | null;
-  source: "sensiot" | "sensiot-energy" | "intellicar" | "none";
 }
 
 function todayIso(): string {
@@ -48,12 +45,9 @@ function rowsToCsv(rows: ExportRow[]): string {
     { header: "Zone",            get: (r) => r.zone },
     { header: "Vehicle No.",     get: (r) => r.vehicleNo },
     { header: "Battery ID",      get: (r) => r.batteryId },
-    { header: "BMS ID",          get: (r) => r.bmsId },
     { header: "Model",           get: (r) => r.packModel },
     { header: "Distance (km)",   get: (r) => r.distanceKm != null ? r.distanceKm.toFixed(1) : "" },
     { header: "Energy (kWh)",    get: (r) => r.energyKwh != null ? r.energyKwh.toFixed(3) : "" },
-    { header: "Cycles",          get: (r) => r.cycleIncrement != null ? r.cycleIncrement.toFixed(2) : "" },
-    { header: "Source",          get: (r) => r.source },
   ];
   const header = cols.map((c) => c.header).join(",");
   const body = rows.map((r) => cols.map((c) => escapeCsv(c.get(r))).join(",")).join("\n");
@@ -159,8 +153,7 @@ export default function DownloadButton({
             ))}
           </div>
           <div className="text-[11px] text-ink-3 leading-snug mb-3">
-            One row per rider per day. Source column shows where distance came from.
-            Empty distance = no data for that rider on that day.
+            One row per rider per day. Empty distance = no data for that rider on that day.
           </div>
           {err && <div className="text-xs text-bad mb-2">{err}</div>}
           <div className="flex items-center gap-2">
