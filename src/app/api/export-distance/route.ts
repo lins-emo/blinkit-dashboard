@@ -6,6 +6,9 @@ import { canonicalZone } from "@/config/zones";
 import { session } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
+// Vercel default is 10 s; this route does many fan-out fetches (Sensiot batch +
+// Intellicar per-day for fallback). Allow up to 60 s on Hobby tier.
+export const maxDuration = 60;
 
 interface ExportRow {
   riderId: string;
