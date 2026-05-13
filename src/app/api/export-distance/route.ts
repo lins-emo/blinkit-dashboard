@@ -44,6 +44,14 @@ export async function POST(req: Request) {
   const s = await session();
   if (!s.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
+  // Fail loudly if the server-side Sensiot key is missing — otherwise the CSV
+  // silently comes back blank and looks broken without explanation.
+  if (!process.env.SENSIOT_API_KEY) {
+    return NextResponse.json({
+      error: "SENSIOT_API_KEY is not set on the server. Add it in Vercel → Settings → Environment Variables and redeploy.",
+    }, { status: 500 });
+  }
+
   const body = await req.json().catch(() => ({}));
   const from: string = body?.from;
   const to: string = body?.to;
