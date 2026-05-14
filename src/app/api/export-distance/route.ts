@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { listBlinkitRiders, getPackInfoForVehicles } from "@/lib/mongo";
-import { getDeviceTriples, getReportBatch, getPackEfficiencies, distanceFromReport, type ReportData, type DistanceSource } from "@/lib/sensiot";
+import { getDeviceTriples, getReportBatchFull, getPackEfficiencies, distanceFromReport, type ReportData, type DistanceSource, type BatchError } from "@/lib/sensiot";
 import { getIntellicarVehicleSet, getIntellicarDistance } from "@/lib/intellicar";
 import { canonicalZone } from "@/config/zones";
 import { session } from "@/lib/auth";
@@ -109,14 +109,20 @@ export async function POST(req: Request) {
   }
   const dateChunks = chunk(dates, 7);
   const sensiotBatch: Record<string, Record<string, ReportData>> = {};
+  const backendErrors: BatchError[] = [];
+  const backendFailedSet = new Set<string>();   // "deviceId|date" keys for fast lookup
   if (deviceIds.length > 0) {
     const chunkResults = await Promise.all(
-      dateChunks.map((dc) => getReportBatch(deviceIds, dc))
+      dateChunks.map((dc) => getReportBatchFull(deviceIds, dc))
     );
     for (const res of chunkResults) {
-      for (const [devId, byDate] of Object.entries(res)) {
+      for (const [devId, byDate] of Object.entries(res.data)) {
         if (!sensiotBatch[devId]) sensiotBatch[devId] = {};
         Object.assign(sensiotBatch[devId], byDate);
+      }
+      for (const err of res.errors) {
+        backendFailedSet.add(`${err.id}|${err.date}`);
+        if (backendErrors.length < 50) backendErrors.push(err);
       }
     }
   }
@@ -180,6 +186,13 @@ export async function POST(req: Request) {
       let distanceKm = sensiotResult.km;
       let source: DistanceSource = sensiotResult.source;
 
+      // If Sensiot has no data AND the backend reported this pair as failed,
+      // label it explicitly so ops can distinguish "rider didn't ride" from
+      // "backend bug ate the data".
+      if (distanceKm == null && deviceId && backendFailedSet.has(`${deviceId}|${date}`)) {
+        source = "backend-error";
+      }
+
       // Intellicar fallback only when Sensiot returned no data at all
       if (distanceKm == null) {
         const icDay = intellicarResults.get(vid)?.get(date);
@@ -203,7 +216,13 @@ export async function POST(req: Request) {
         sensiotEnergyPack: rows.filter((r) => r.source === "sensiot-energy-pack").length,
         sensiotEnergyFleet: rows.filter((r) => r.source === "sensiot-energy-fleet").length,
         intellicar: rows.filter((r) => r.source === "intellicar").length,
+        backendError: rows.filter((r) => r.source === "backend-error").length,
         none: rows.filter((r) => r.source === "none").length,
+      },
+      backendErrors: {
+        count: backendErrors.length,
+        firstMessage: backendErrors[0]?.error ?? null,
+        sample: backendErrors.slice(0, 5),
       },
     },
     rows,

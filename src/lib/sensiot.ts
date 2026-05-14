@@ -111,16 +111,42 @@ const cachedLiveAll = unstable_cache(
   { revalidate: 25, tags: ["sensiot", "live"] }
 );
 
-async function _fetchReportBatch(identifiers: string[], dates: string[]): Promise<Record<string, Record<string, ReportData>>> {
-  return callJson(`/reports/batch`, {
-    method: "POST",
-    body: JSON.stringify({ identifiers, dates, queryBy: "deviceId" }),
-  });
+export interface BatchError {
+  id: string;        // deviceId or imei (whatever queryBy was)
+  date: string;      // YYYY-MM-DD
+  error: string;     // truncated to ~200 chars by the backend
 }
-// We cache by the serialized inputs (unstable_cache hashes the args).
-const cachedReportBatch = unstable_cache(
-  _fetchReportBatch,
-  ["sensiot:reportBatch:v1"],
+export interface BatchResult {
+  data: Record<string, Record<string, ReportData>>;
+  failedPairs: number;
+  failedIds: string[];   // distinct ids that had ≥1 failure
+  errors: BatchError[];  // capped at 50 by the backend
+}
+
+// Lower-level fetch returns the full envelope (data + meta) so callers can see
+// which pairs the backend failed to compute vs which legitimately have no data.
+async function _fetchReportBatchFull(identifiers: string[], dates: string[]): Promise<BatchResult> {
+  if (!API_KEY) throw new Error("SENSIOT_API_KEY missing");
+  const res = await fetch(`${BASE}/api/v1/reports/batch`, {
+    method: "POST",
+    headers: { "x-api-key": API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ identifiers, dates, queryBy: "deviceId" }),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`sensiot /reports/batch -> ${res.status} ${await res.text().catch(() => "")}`);
+  const j = await res.json();
+  if (j?.success !== true) throw new Error(`sensiot /reports/batch -> success=false ${JSON.stringify(j).slice(0, 200)}`);
+  return {
+    data: j.data ?? {},
+    failedPairs: j.meta?.failedPairs ?? 0,
+    failedIds:   j.meta?.failedIds   ?? [],
+    errors:      j.meta?.errors      ?? [],
+  };
+}
+
+const cachedReportBatchFull = unstable_cache(
+  _fetchReportBatchFull,
+  ["sensiot:reportBatchFull:v1"],
   { revalidate: 60, tags: ["sensiot", "reports"] }
 );
 
@@ -135,13 +161,43 @@ export async function getLiveAll(): Promise<Record<string, LiveDevice>> {
   try { return await cachedLiveAll(); } catch (e) { console.warn("[sensiot] liveAll fail", e); return {}; }
 }
 
+/** Backward-compatible shape — just the data, errors silently ignored. */
 export async function getReportBatch(
   deviceIds: string[],
   dates: string[]
 ): Promise<Record<string, Record<string, ReportData>>> {
-  if (deviceIds.length === 0 || dates.length === 0) return {};
-  try { return await cachedReportBatch(deviceIds, dates); }
-  catch (e) { console.warn("[sensiot] reportBatch fail", e); return {}; }
+  return (await getReportBatchFull(deviceIds, dates)).data;
+}
+
+/** Full result including per-pair failures from sensbackend. Used by the
+ *  export route to surface backend errors to the UI rather than masquerade
+ *  them as "no data". */
+export async function getReportBatchFull(
+  deviceIds: string[],
+  dates: string[]
+): Promise<BatchResult> {
+  if (deviceIds.length === 0 || dates.length === 0) {
+    return { data: {}, failedPairs: 0, failedIds: [], errors: [] };
+  }
+  try { return await cachedReportBatchFull(deviceIds, dates); }
+  catch (e) {
+    console.warn("[sensiot] reportBatch fail", e);
+    // Whole-call failure (network / auth / 5xx) → treat every pair as failed.
+    const errMsg = e instanceof Error ? e.message : String(e);
+    const errors: BatchError[] = [];
+    outer: for (const id of deviceIds) {
+      for (const d of dates) {
+        if (errors.length >= 50) break outer;
+        errors.push({ id, date: d, error: errMsg.slice(0, 200) });
+      }
+    }
+    return {
+      data: {},
+      failedPairs: deviceIds.length * dates.length,
+      failedIds: [...deviceIds],
+      errors,
+    };
+  }
 }
 
 // ---------- Distance derivation ----------
@@ -160,6 +216,7 @@ export type DistanceSource =
   | "sensiot-energy-fleet"      // derived from energy × fleet constant (45)
   | "intellicar"                // fallback from Intellicar
   | "synthetic"                 // deterministic placeholder (UI only)
+  | "backend-error"             // sensbackend returned an error for this pair (not the same as "no data")
   | "none";                     // no data anywhere
 
 export interface DistanceWithSource {

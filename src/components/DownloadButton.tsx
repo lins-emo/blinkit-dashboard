@@ -71,6 +71,7 @@ export default function DownloadButton({
   const [to, setTo] = useState(todayIso());
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
@@ -86,6 +87,7 @@ export default function DownloadButton({
   async function download() {
     setLoading(true);
     setErr(null);
+    setWarning(null);
     try {
       const res = await fetch("/api/export-distance", {
         method: "POST",
@@ -96,11 +98,24 @@ export default function DownloadButton({
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `HTTP ${res.status}`);
       }
-      const data = await res.json() as { rows: ExportRow[]; meta: { sources: Record<string, number> } };
+      const data = await res.json() as {
+        rows: ExportRow[];
+        meta: {
+          sources: Record<string, number>;
+          backendErrors?: { count: number; firstMessage: string | null };
+        };
+      };
       const csv = rowsToCsv(data.rows);
       const stamp = from === to ? from : `${from}_to_${to}`;
       downloadCsv(`${fileNamePrefix}-${stamp}.csv`, csv);
-      setOpen(false);
+      // Surface backend-error count if present so ops sees data quality at a glance.
+      const be = data.meta?.backendErrors;
+      if (be && be.count > 0) {
+        const reason = be.firstMessage ? ` — ${be.firstMessage.slice(0, 80)}${be.firstMessage.length > 80 ? "…" : ""}` : "";
+        setWarning(`Downloaded with ${be.count} backend error${be.count === 1 ? "" : "s"}${reason}`);
+      } else {
+        setOpen(false);
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -156,6 +171,11 @@ export default function DownloadButton({
             One row per rider per day. Empty distance = no data for that rider on that day.
           </div>
           {err && <div className="text-xs text-bad mb-2">{err}</div>}
+          {warning && (
+            <div className="text-[11px] text-warn bg-warn/10 border border-warn/25 rounded-md p-2 mb-2 leading-snug">
+              {warning}
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <button
               type="button"
