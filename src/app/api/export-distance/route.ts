@@ -200,7 +200,6 @@ export async function POST(req: Request) {
       rows: rows.length,
       sources: {
         sensiotGps: rows.filter((r) => r.source === "sensiot-gps").length,
-        sensiotGpsSuspicious: rows.filter((r) => r.source === "sensiot-gps-suspicious").length,
         sensiotEnergyPack: rows.filter((r) => r.source === "sensiot-energy-pack").length,
         sensiotEnergyFleet: rows.filter((r) => r.source === "sensiot-energy-fleet").length,
         intellicar: rows.filter((r) => r.source === "intellicar").length,

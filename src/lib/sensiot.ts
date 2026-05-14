@@ -155,9 +155,8 @@ export const KM_PER_KWH_FLEET = 45;
 export const RATIO_BOUNDS = { min: 5, max: 150 } as const;
 
 export type DistanceSource =
-  | "sensiot-gps"               // real GPS haversine, ratio passes sanity
-  | "sensiot-gps-suspicious"    // real GPS km but implied km/kWh out of bounds
-  | "sensiot-energy-pack"       // derived from energy × per-pack median
+  | "sensiot-gps"               // real GPS haversine, implied km/kWh in bounds
+  | "sensiot-energy-pack"       // derived from energy × per-pack median (used when no GPS, or GPS implied ratio is impossible)
   | "sensiot-energy-fleet"      // derived from energy × fleet constant (45)
   | "intellicar"                // fallback from Intellicar
   | "synthetic"                 // deterministic placeholder (UI only)
@@ -169,7 +168,16 @@ export interface DistanceWithSource {
 }
 
 /** Resolve a single pack-day report into a displayable km value + source flag.
- *  Pass `perPackKmPerKwh` if the pack has a stable per-pack efficiency available. */
+ *  Pass `perPackKmPerKwh` if the pack has a stable per-pack efficiency available.
+ *
+ *  Logic:
+ *    1. Both km and energy present → check implied km/kWh ratio.
+ *       - in bounds → trust GPS km.
+ *       - out of bounds → GPS is wrong; CORRECT it with energy × ratio
+ *         (per-pack ratio if available, else fleet constant).
+ *    2. Only km present (no energy) → no cross-check possible, trust GPS.
+ *    3. Only energy present → derive km from energy × ratio.
+ *    4. Neither → null. */
 export function distanceFromReport(
   rep: ReportData | undefined | null,
   perPackKmPerKwh?: number
@@ -178,28 +186,26 @@ export function distanceFromReport(
   const km = typeof rep.distanceTraveled === "number" ? rep.distanceTraveled : 0;
   const e  = typeof rep.energyConsumed  === "number" ? rep.energyConsumed  : 0;
 
+  const energyDerived = (): DistanceWithSource => {
+    if (perPackKmPerKwh && perPackKmPerKwh > 0) {
+      return { km: Math.round(e * perPackKmPerKwh * 10) / 10, source: "sensiot-energy-pack" };
+    }
+    return { km: Math.round(e * KM_PER_KWH_FLEET * 10) / 10, source: "sensiot-energy-fleet" };
+  };
+
   if (km > 0 && e > 0) {
     const ratio = km / e;
-    const ok = ratio >= RATIO_BOUNDS.min && ratio <= RATIO_BOUNDS.max;
-    return {
-      km: Math.round(km * 10) / 10,
-      source: ok ? "sensiot-gps" : "sensiot-gps-suspicious",
-    };
+    if (ratio >= RATIO_BOUNDS.min && ratio <= RATIO_BOUNDS.max) {
+      return { km: Math.round(km * 10) / 10, source: "sensiot-gps" };
+    }
+    // Suspicious GPS → correct with energy-derived value
+    return energyDerived();
   }
   if (km > 0) {
     return { km: Math.round(km * 10) / 10, source: "sensiot-gps" };
   }
   if (e > 0) {
-    if (perPackKmPerKwh && perPackKmPerKwh > 0) {
-      return {
-        km: Math.round(e * perPackKmPerKwh * 10) / 10,
-        source: "sensiot-energy-pack",
-      };
-    }
-    return {
-      km: Math.round(e * KM_PER_KWH_FLEET * 10) / 10,
-      source: "sensiot-energy-fleet",
-    };
+    return energyDerived();
   }
   return { km: null, source: "none" };
 }
