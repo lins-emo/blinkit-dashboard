@@ -47,7 +47,6 @@ function rowsToCsv(rows: ExportRow[]): string {
     { header: "Battery ID",      get: (r) => r.batteryId },
     { header: "Model",           get: (r) => r.packModel },
     { header: "Distance (km)",   get: (r) => r.distanceKm != null ? r.distanceKm.toFixed(1) : "" },
-    { header: "Energy (kWh)",    get: (r) => r.energyKwh != null ? r.energyKwh.toFixed(3) : "" },
   ];
   const header = cols.map((c) => c.header).join(",");
   const body = rows.map((r) => cols.map((c) => escapeCsv(c.get(r))).join(",")).join("\n");
