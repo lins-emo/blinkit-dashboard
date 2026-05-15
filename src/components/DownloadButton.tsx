@@ -40,7 +40,6 @@ function rowsToCsv(rows: ExportRow[]): string {
     { header: "Name",            get: (r) => r.name },
     { header: "Phone",           get: (r) => r.phone },
     { header: "Blinkit Rider ID",get: (r) => r.blinkitRiderId },
-    { header: "App ID",          get: (r) => r.appId },
     { header: "City",            get: (r) => r.city },
     { header: "Zone",            get: (r) => r.zone },
     { header: "Vehicle No.",     get: (r) => r.vehicleNo },
