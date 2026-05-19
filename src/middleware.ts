@@ -6,6 +6,7 @@ export function middleware(req: NextRequest) {
   if (
     pathname === "/login" ||
     pathname.startsWith("/api/auth") ||
+    pathname === "/api/warm" ||           // cache-warmer cron, guarded by its own WARM_SECRET
     pathname.startsWith("/_next") ||
     pathname === "/favicon.ico"
   ) return NextResponse.next();

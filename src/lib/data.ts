@@ -402,7 +402,7 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
 const _cachedAllRiderRows = unstable_cache(
   _computeAllRiderRows,
   ["data:allRiderRows:v2"],
-  { revalidate: 30, tags: ["riders"] }
+  { revalidate: 60, tags: ["riders"] }
 );
 
 export async function getAllRiderRows(): Promise<RiderRow[]> {
