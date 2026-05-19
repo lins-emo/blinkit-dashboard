@@ -350,7 +350,7 @@ async function _computeAllRiderRows(): Promise<RiderRow[]> {
     const reportsForDevice = reportBatch[deviceId] ?? {};
     const perPackKmPerKwh = packEfficiencies.get(deviceId);
 
-    // Today distance — primary GPS, fallback to per-pack energy ratio, then fleet ratio.
+    // Today distance — GPS when present; energy-derived only when km is missing.
     const todayReport = reportsForDevice[today];
     const todayResult = distanceFromReport(todayReport, perPackKmPerKwh);
     let todayDistance: number | null = todayResult.km;

@@ -101,7 +101,7 @@ export async function POST(req: Request) {
   //    60 s function budget on cold cache. Four 7-day chunks in parallel finish in
   //    the time of the slowest chunk (~10 s instead of ~50 s sequential).
   //    Per-pack efficiencies are skipped in export to avoid an extra 14-day Sensiot
-  //    fetch on top — fleet constant (45 km/kWh) is used for energy-derived rows.
+  //    fetch on top — fleet constant (45 km/kWh) is used when km is missing.
   function chunk<T>(arr: T[], n: number): T[][] {
     const out: T[][] = [];
     for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));

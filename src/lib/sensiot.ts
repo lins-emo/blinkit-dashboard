@@ -206,14 +206,13 @@ export async function getReportBatchFull(
  *  1631 GREEN pack-days in the 14-day BNC audit. */
 export const KM_PER_KWH_FLEET = 45;
 
-/** Cross-validation bounds on the implied km/kWh ratio. Outside this range, the
- *  GPS measurement is almost certainly wrong (multi-path, lost fix, etc.). */
+/** Bounds for filtering days when computing per-pack km/kWh medians (not GPS validation). */
 export const RATIO_BOUNDS = { min: 5, max: 150 } as const;
 
 export type DistanceSource =
-  | "sensiot-gps"               // real GPS haversine, implied km/kWh in bounds
-  | "sensiot-energy-pack"       // derived from energy × per-pack median (used when no GPS, or GPS implied ratio is impossible)
-  | "sensiot-energy-fleet"      // derived from energy × fleet constant (45)
+  | "sensiot-gps"               // GPS distance from report when km is present
+  | "sensiot-energy-pack"       // energy × per-pack median — only when km is missing
+  | "sensiot-energy-fleet"      // energy × fleet constant (45) — only when km is missing
   | "intellicar"                // fallback from Intellicar
   | "synthetic"                 // deterministic placeholder (UI only)
   | "backend-error"             // sensbackend returned an error for this pair (not the same as "no data")
@@ -228,13 +227,9 @@ export interface DistanceWithSource {
  *  Pass `perPackKmPerKwh` if the pack has a stable per-pack efficiency available.
  *
  *  Logic:
- *    1. Both km and energy present → check implied km/kWh ratio.
- *       - in bounds → trust GPS km.
- *       - out of bounds → GPS is wrong; CORRECT it with energy × ratio
- *         (per-pack ratio if available, else fleet constant).
- *    2. Only km present (no energy) → no cross-check possible, trust GPS.
- *    3. Only energy present → derive km from energy × ratio.
- *    4. Neither → null. */
+ *    1. km present → trust GPS km (energy is ignored).
+ *    2. km missing, energy present → derive km from energy × ratio.
+ *    3. Neither → null. */
 export function distanceFromReport(
   rep: ReportData | undefined | null,
   perPackKmPerKwh?: number
@@ -243,26 +238,14 @@ export function distanceFromReport(
   const km = typeof rep.distanceTraveled === "number" ? rep.distanceTraveled : 0;
   const e  = typeof rep.energyConsumed  === "number" ? rep.energyConsumed  : 0;
 
-  const energyDerived = (): DistanceWithSource => {
-    if (perPackKmPerKwh && perPackKmPerKwh > 0) {
-      return { km: Math.round(e * perPackKmPerKwh * 10) / 10, source: "sensiot-energy-pack" };
-    }
-    return { km: Math.round(e * KM_PER_KWH_FLEET * 10) / 10, source: "sensiot-energy-fleet" };
-  };
-
-  if (km > 0 && e > 0) {
-    const ratio = km / e;
-    if (ratio >= RATIO_BOUNDS.min && ratio <= RATIO_BOUNDS.max) {
-      return { km: Math.round(km * 10) / 10, source: "sensiot-gps" };
-    }
-    // Suspicious GPS → correct with energy-derived value
-    return energyDerived();
-  }
   if (km > 0) {
     return { km: Math.round(km * 10) / 10, source: "sensiot-gps" };
   }
   if (e > 0) {
-    return energyDerived();
+    if (perPackKmPerKwh && perPackKmPerKwh > 0) {
+      return { km: Math.round(e * perPackKmPerKwh * 10) / 10, source: "sensiot-energy-pack" };
+    }
+    return { km: Math.round(e * KM_PER_KWH_FLEET * 10) / 10, source: "sensiot-energy-fleet" };
   }
   return { km: null, source: "none" };
 }
