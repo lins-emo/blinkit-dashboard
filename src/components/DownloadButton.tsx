@@ -34,7 +34,10 @@ function escapeCsv(v: string | number | null | undefined): string {
   return s;
 }
 
-function rowsToCsv(rows: ExportRow[]): string {
+export type ExportMode = "individual" | "merged" | "total";
+
+// One row per (rider × date) — passthrough of the API response.
+function individualCsv(rows: ExportRow[]): string {
   const cols: { header: string; get: (r: ExportRow) => string | number | null }[] = [
     { header: "Date",            get: (r) => r.date },
     { header: "Name",            get: (r) => r.name },
@@ -52,6 +55,72 @@ function rowsToCsv(rows: ExportRow[]): string {
   return header + "\n" + body + "\n";
 }
 
+// One row per rider — distance summed across the requested date range.
+function mergedCsv(rows: ExportRow[], from: string, to: string): string {
+  interface Agg {
+    name: string; phone: string; blinkitRiderId: string;
+    city: string; zone: string; vehicleNo: string;
+    batteryId: string; packModel: string;
+    totalKm: number; daysWithData: number;
+  }
+  const byRider = new Map<string, Agg>();
+  for (const r of rows) {
+    if (!byRider.has(r.riderId)) {
+      byRider.set(r.riderId, {
+        name: r.name, phone: r.phone, blinkitRiderId: r.blinkitRiderId,
+        city: r.city, zone: r.zone, vehicleNo: r.vehicleNo,
+        batteryId: r.batteryId, packModel: r.packModel,
+        totalKm: 0, daysWithData: 0,
+      });
+    }
+    const a = byRider.get(r.riderId)!;
+    if (r.distanceKm != null) {
+      a.totalKm += r.distanceKm;
+      a.daysWithData += 1;
+    }
+  }
+  const cols = [
+    "Name", "Phone", "Blinkit Rider ID", "City", "Zone",
+    "Vehicle No.", "Battery ID", "Model",
+    "From", "To", "Days With Data", "Total Distance (km)",
+  ];
+  const header = cols.join(",");
+  // Sort descending by total km so the busiest riders are on top.
+  const sorted = [...byRider.values()].sort((a, b) => b.totalKm - a.totalKm);
+  const body = sorted.map((a) => [
+    a.name, a.phone, a.blinkitRiderId, a.city, a.zone,
+    a.vehicleNo, a.batteryId, a.packModel,
+    from, to, a.daysWithData, a.totalKm.toFixed(1),
+  ].map(escapeCsv).join(",")).join("\n");
+  return header + "\n" + body + "\n";
+}
+
+// Single grand-total row — fleet-level summary.
+function totalCsv(rows: ExportRow[], from: string, to: string): string {
+  const riderIds = new Set<string>();
+  let totalKm = 0;
+  let pairsWithData = 0;
+  for (const r of rows) {
+    riderIds.add(r.riderId);
+    if (r.distanceKm != null) {
+      totalKm += r.distanceKm;
+      pairsWithData += 1;
+    }
+  }
+  const header = "From,To,Riders,Total Pack-Days,Pack-Days With Data,Total Distance (km),Avg km / Rider";
+  const avgPerRider = riderIds.size > 0 ? totalKm / riderIds.size : 0;
+  const body = [
+    from, to, riderIds.size, rows.length, pairsWithData, totalKm.toFixed(1), avgPerRider.toFixed(1),
+  ].map(escapeCsv).join(",");
+  return header + "\n" + body + "\n";
+}
+
+function buildCsv(rows: ExportRow[], mode: ExportMode, from: string, to: string): string {
+  if (mode === "merged") return mergedCsv(rows, from, to);
+  if (mode === "total")  return totalCsv(rows, from, to);
+  return individualCsv(rows);
+}
+
 export default function DownloadButton({
   riderIds,
   fileNamePrefix = "blinkit-riders",
@@ -67,6 +136,7 @@ export default function DownloadButton({
   const [open, setOpen] = useState(false);
   const [from, setFrom] = useState(daysAgoIso(6));
   const [to, setTo] = useState(todayIso());
+  const [mode, setMode] = useState<ExportMode>("individual");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -103,9 +173,10 @@ export default function DownloadButton({
           backendErrors?: { count: number; firstMessage: string | null };
         };
       };
-      const csv = rowsToCsv(data.rows);
+      const csv = buildCsv(data.rows, mode, from, to);
       const stamp = from === to ? from : `${from}_to_${to}`;
-      downloadCsv(`${fileNamePrefix}-${stamp}.csv`, csv);
+      const suffix = mode === "individual" ? "" : `-${mode}`;
+      downloadCsv(`${fileNamePrefix}-${stamp}${suffix}.csv`, csv);
       // Surface backend-error count if present so ops sees data quality at a glance.
       const be = data.meta?.backendErrors;
       if (be && be.count > 0) {
@@ -165,8 +236,28 @@ export default function DownloadButton({
               </button>
             ))}
           </div>
-          <div className="text-[11px] text-ink-3 leading-snug mb-3">
-            One row per rider per day. Empty distance = no data for that rider on that day.
+
+          <div className="mb-3">
+            <div className="text-[10px] uppercase tracking-wider text-ink-3 font-medium mb-1.5">Format</div>
+            <div className="space-y-1">
+              {([
+                { value: "individual", label: "Per day",        hint: "One row per rider per date" },
+                { value: "merged",     label: "Per rider",      hint: "One row per rider, distance summed over range" },
+                { value: "total",      label: "Fleet total",    hint: "Single row, grand total across all riders" },
+              ] as { value: ExportMode; label: string; hint: string }[]).map((opt) => (
+                <label key={opt.value}
+                  className={`flex items-start gap-2 px-2 py-1.5 border rounded-md cursor-pointer transition ${mode === opt.value ? "border-accent/40 bg-accent/5" : "border-line-2 hover:bg-bg"}`}>
+                  <input type="radio" name="export-mode" value={opt.value}
+                    checked={mode === opt.value}
+                    onChange={() => setMode(opt.value)}
+                    className="mt-0.5 accent-accent" />
+                  <div className="min-w-0">
+                    <div className="text-sm text-ink leading-tight">{opt.label}</div>
+                    <div className="text-[11px] text-ink-3 leading-tight">{opt.hint}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
           </div>
           {err && <div className="text-xs text-bad mb-2">{err}</div>}
           {warning && (
