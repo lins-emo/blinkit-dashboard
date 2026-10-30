@@ -15,7 +15,7 @@ function LoginForm() {
   const router = useRouter();
   const search = useSearchParams();
   const [username, setUsername] = useState("blinkit");
-  const [password, setPassword] = useState("blinkit@emo2026");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
